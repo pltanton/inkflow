@@ -1,0 +1,4 @@
+inkflow.local.toml
+.inkflow/
+*.db
+.env

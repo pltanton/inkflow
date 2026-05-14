@@ -1,0 +1,52 @@
+package plan
+
+import (
+	"fmt"
+	"path"
+	"strings"
+
+	"inkflow/internal/config"
+)
+
+type Match struct {
+	Route     config.Route
+	Matched   bool
+	Remainder string
+}
+
+func Select(routes []config.Route, sourcePath string) (Match, error) {
+	sp := normalize(sourcePath)
+	bestLen := -1
+	var best Match
+	ambiguous := false
+	for _, r := range routes {
+		from := normalize(r.From)
+		if from == "" || !strings.HasPrefix(sp, from) {
+			continue
+		}
+		if len(from) <= bestLen {
+			if len(from) == bestLen {
+				ambiguous = true
+			}
+			continue
+		}
+		bestLen = len(from)
+		best = Match{Route: r, Matched: true, Remainder: strings.Trim(strings.TrimPrefix(sp, from), "/")}
+		ambiguous = false
+	}
+	if ambiguous {
+		return Match{}, fmt.Errorf("ambiguous route match for %q", sourcePath)
+	}
+	return best, nil
+}
+
+func normalize(s string) string {
+	s = strings.ReplaceAll(s, "\\", "/")
+	if s == "" {
+		return ""
+	}
+	if !strings.HasSuffix(s, "/") {
+		s += "/"
+	}
+	return path.Clean(s) + "/"
+}
