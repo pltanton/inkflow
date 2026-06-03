@@ -6,6 +6,11 @@
     stateDir = "/var/lib/inkflow";
     environmentFiles = [ "/run/keys/inkflow.env" ];
 
+    gemini = {
+      apiKeyFile = "/run/secrets/gemini-api-key";
+      model = "gemini-2.5-flash";
+    };
+
     routes = [
       {
         from = "Syncs/";
@@ -14,6 +19,7 @@
         note_name = "{stem}.md";
         pdf_name = "{stem}.pdf";
         template = "sync";
+        ai = true;
       }
       {
         from = "Meetings/";
@@ -22,6 +28,7 @@
         note_name = "{stem}.md";
         pdf_name = "{stem}.pdf";
         template = "meeting";
+        ai = true;
       }
       {
         from = "1-1/";

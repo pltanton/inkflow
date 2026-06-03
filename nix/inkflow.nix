@@ -11,21 +11,47 @@ let
       note_name = lib.mkOption {type = lib.types.str; default = "";};
       pdf_name = lib.mkOption {type = lib.types.str; default = "";};
       template = lib.mkOption {type = lib.types.str; default = "";};
+      ai = lib.mkOption {type = lib.types.bool; default = false;};
+    };
+  };
+
+  geminiType = lib.types.submodule {
+    options = {
+      apiKeyFile    = lib.mkOption { type = lib.types.nullOr lib.types.path; default = null; };
+      model         = lib.mkOption { type = lib.types.str; default = "gemini-2.5-flash"; };
+      timeout       = lib.mkOption { type = lib.types.str; default = "60s"; };
+      ocrPrompt     = lib.mkOption { type = lib.types.str; default = "Transcribe the page faithfully. Preserve line breaks when useful. Keep the source language. Do not translate or summarize."; };
+      summaryPrompt = lib.mkOption { type = lib.types.str; default = "Summarize as 3-5 short bullets covering action items, decisions, deadlines, people. Use the same language as the source."; };
     };
   };
 
   mkRoute = r:
-    lib.filterAttrs (_: v: v != "" && v != null) {
+    lib.filterAttrs (_: v: v != "" && v != null && v != false) {
       inherit (r)
         from
         pdf_dir
         note_dir
         note_name
         pdf_name
-        template;
+        template
+        ai;
     };
 
   mkConfig = attrs: lib.filterAttrs (_: v: v != "" && v != null) attrs;
+
+  # When apiKeyFile is set, systemd LoadCredential delivers the key file at
+  # /run/credentials/inkflow.service/gemini-key and the app reads it via the
+  # api_key_file path. This avoids putting the key into $GEMINI_API_KEY (which
+  # would otherwise show up in process listings) and keeps the secret out of
+  # /nix/store.
+  geminiSettings = mkConfig ({
+    model          = cfg.gemini.model;
+    timeout        = cfg.gemini.timeout;
+    ocr_prompt     = cfg.gemini.ocrPrompt;
+    summary_prompt = cfg.gemini.summaryPrompt;
+  } // lib.optionalAttrs (cfg.gemini.apiKeyFile != null) {
+    api_key_file = "/run/credentials/inkflow.service/gemini-key";
+  });
 
   baseSettings = mkConfig {
     listen_addr = cfg.listenAddr;
@@ -37,7 +63,7 @@ let
     default_note_dir = cfg.defaultNoteDir;
     state_file = cfg.stateFile;
     route = map mkRoute cfg.routes;
-  };
+  } // { gemini = geminiSettings; };
 
   configFile = toml.generate "inkflow.toml" (baseSettings // cfg.extraSettings);
 in {
@@ -111,6 +137,12 @@ in {
       default = [];
     };
 
+    gemini = lib.mkOption {
+      type = geminiType;
+      default = {};
+      description = "Gemini OCR+summary settings";
+    };
+
     extraSettings = lib.mkOption {
       type = lib.types.attrs;
       default = {};
@@ -151,6 +183,8 @@ in {
         Restart = "always";
         RestartSec = "5s";
         NoNewPrivileges = true;
+      } // lib.optionalAttrs (cfg.gemini.apiKeyFile != null) {
+        LoadCredential = [ "gemini-key:${toString cfg.gemini.apiKeyFile}" ];
       };
     };
   };

@@ -20,6 +20,7 @@ type Result struct {
 	Date       time.Time
 	Template   string
 	Tags       []string
+	AI         bool
 }
 
 var ErrNoRoute = errors.New("no route matches")
@@ -64,6 +65,7 @@ func Build(routes []config.Route, defaults *config.Config, input string, now tim
 		Date:       date,
 		Template:   r.Template,
 		Tags:       tags,
+		AI:         r.AI,
 	}, nil
 }
 

@@ -1,6 +1,8 @@
 package importer
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -12,8 +14,10 @@ import (
 	"strings"
 	"time"
 
+	"inkflow/internal/ai"
 	"inkflow/internal/config"
 	"inkflow/internal/frontmatter"
+	"inkflow/internal/note"
 	"inkflow/internal/plan"
 	"inkflow/internal/state"
 )
@@ -21,13 +25,14 @@ import (
 type Importer struct {
 	cfg   *config.Config
 	store *state.Store
+	ai    ai.Provider
 }
 
-func New(cfg *config.Config, store *state.Store) *Importer {
-	return &Importer{cfg: cfg, store: store}
+func New(cfg *config.Config, store *state.Store, aiProvider ai.Provider) *Importer {
+	return &Importer{cfg: cfg, store: store, ai: aiProvider}
 }
 
-func (i *Importer) Import(input string, reader io.Reader, modTime time.Time) (*state.Record, error) {
+func (i *Importer) Import(ctx context.Context, input string, reader io.Reader, modTime time.Time) (*state.Record, error) {
 	if !strings.EqualFold(path.Ext(input), ".pdf") {
 		return nil, fmt.Errorf("not a pdf: %s", input)
 	}
@@ -47,7 +52,7 @@ func (i *Importer) Import(input string, reader io.Reader, modTime time.Time) (*s
 	if err != nil {
 		return nil, err
 	}
-	return i.persist(existing, input, modTime, sha, t, data)
+	return i.persist(ctx, existing, input, modTime, sha, t, data)
 }
 
 func (i *Importer) lookupRecord(sourcePath, sha string) (*state.Record, error) {
@@ -72,7 +77,7 @@ func (i *Importer) lookupRecord(sourcePath, sha string) (*state.Record, error) {
 	return old, nil
 }
 
-func (i *Importer) persist(existing *state.Record, sourcePath string, modTime time.Time, sha string, t plan.Result, pdfData []byte) (*state.Record, error) {
+func (i *Importer) persist(ctx context.Context, existing *state.Record, sourcePath string, modTime time.Time, sha string, t plan.Result, pdfData []byte) (*state.Record, error) {
 	pdfAbs := filepath.Join(i.cfg.VaultDir, filepath.FromSlash(t.PDFRel))
 	noteAbs := filepath.Join(i.cfg.VaultDir, filepath.FromSlash(t.NoteRel))
 	if err := os.MkdirAll(filepath.Dir(pdfAbs), 0o755); err != nil {
@@ -103,7 +108,28 @@ func (i *Importer) persist(existing *state.Record, sourcePath string, modTime ti
 		*existing = *rec
 		rec = existing
 	}
-	if err := i.writeNote(t); err != nil {
+
+	var summaryBody, ocrBody string
+	if t.AI && i.ai != nil {
+		res, err := i.ai.Process(ctx, bytes.NewReader(pdfData))
+		if err != nil {
+			msg := fmt.Sprintf("_AI failed: %s_", err.Error())
+			summaryBody, ocrBody = msg, msg
+		} else {
+			if res.OCR != "" {
+				ocrBody = res.OCR
+			} else {
+				ocrBody = "_AI returned no transcription._"
+			}
+			if len(res.Summary) > 0 {
+				summaryBody = "- " + strings.Join(res.Summary, "\n- ")
+			} else {
+				summaryBody = "_AI returned no summary._"
+			}
+		}
+	}
+
+	if err := i.writeNote(t, summaryBody, ocrBody); err != nil {
 		removeIfDistinct(previousPDFPath, pdfAbs)
 		removeIfDistinct(previousNotePath, noteAbs)
 		return nil, err
@@ -130,27 +156,32 @@ func (i *Importer) saveRecord(previousSourcePath string, rec *state.Record) erro
 	return i.store.Save(previousSourcePath, rec)
 }
 
-func (i *Importer) writeNote(t plan.Result) error {
+func (i *Importer) writeNote(t plan.Result, summaryBody, ocrBody string) error {
 	noteAbs := filepath.Join(i.cfg.VaultDir, filepath.FromSlash(t.NoteRel))
 	if err := os.MkdirAll(filepath.Dir(noteAbs), 0o755); err != nil {
 		return err
 	}
-	if content, err := os.ReadFile(noteAbs); err == nil {
-		return os.WriteFile(noteAbs, []byte(frontmatter.UpdateTags(string(content), t.Tags)), 0o644)
+	var content string
+	if existing, err := os.ReadFile(noteAbs); err == nil {
+		content = frontmatter.UpdateTags(string(existing), t.Tags)
 	} else if !os.IsNotExist(err) {
 		return err
+	} else {
+		body, err := plan.RenderNoteBody(i.cfg.TemplateDir, plan.NoteData{
+			Date:       t.Date.Format("2006-01-02"),
+			Title:      t.Title,
+			PDFRelPath: t.PDFRel,
+			Template:   t.Template,
+			Tags:       t.Tags,
+		})
+		if err != nil {
+			return err
+		}
+		content = body
 	}
-	body, err := plan.RenderNoteBody(i.cfg.TemplateDir, plan.NoteData{
-		Date:       t.Date.Format("2006-01-02"),
-		Title:      t.Title,
-		PDFRelPath: t.PDFRel,
-		Template:   t.Template,
-		Tags:       t.Tags,
-	})
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(noteAbs, []byte(body), 0o644)
+	content = note.UpsertMarkerBlock(content, "Summary", "summary", summaryBody)
+	content = note.UpsertMarkerBlock(content, "OCR", "ocr", ocrBody)
+	return os.WriteFile(noteAbs, []byte(content), 0o644)
 }
 
 func removeIfDistinct(oldPath, newPath string) {

@@ -84,7 +84,7 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request, clean string)
 		http.Error(w, "missing path", http.StatusBadRequest)
 		return
 	}
-	rec, err := s.imp.Import(clean, r.Body, time.Now().UTC())
+	rec, err := s.imp.Import(r.Context(), clean, r.Body, time.Now().UTC())
 	if err != nil {
 		s.error("webdav import failed", "path", clean, "err", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)

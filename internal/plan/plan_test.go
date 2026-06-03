@@ -119,3 +119,15 @@ func TestBuildStripsHashtagsFromTitle(t *testing.T) {
 		t.Fatalf("note rel = %q", got.NoteRel)
 	}
 }
+
+func TestBuildPropagatesRouteAIFlag(t *testing.T) {
+	routes := []config.Route{{From: "Syncs/", AI: true}}
+	cfg := &config.Config{DefaultPDFDir: "pdfs", DefaultNoteDir: "notes"}
+	got, err := Build(routes, cfg, "Syncs/note.pdf", time.Date(2026, 6, 4, 11, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !got.AI {
+		t.Fatal("expected AI flag to propagate")
+	}
+}

@@ -2,12 +2,17 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"inkflow/internal/ai"
+	"inkflow/internal/ai/gemini"
 	"inkflow/internal/config"
 	"inkflow/internal/importer"
 	"inkflow/internal/log"
@@ -74,11 +79,29 @@ func loadRuntime(logger *slog.Logger, configPath string) (runtime, error) {
 	if cfg.TemplateDir != "" && !filepath.IsAbs(cfg.TemplateDir) {
 		cfg.TemplateDir = filepath.Join(cfgDir, cfg.TemplateDir)
 	}
+	var aiProvider ai.Provider
+	if anyRouteWantsAI(cfg.Routes) {
+		key, err := resolveAPIKey(cfg.Gemini)
+		if err != nil {
+			return runtime{}, err
+		}
+		timeout, err := time.ParseDuration(cfg.Gemini.Timeout)
+		if err != nil {
+			return runtime{}, fmt.Errorf("parse gemini timeout: %w", err)
+		}
+		aiProvider = gemini.New(gemini.ClientConfig{
+			APIKey:        key,
+			Model:         cfg.Gemini.Model,
+			Timeout:       timeout,
+			OCRPrompt:     cfg.Gemini.OCRPrompt,
+			SummaryPrompt: cfg.Gemini.SummaryPrompt,
+		})
+	}
 	store, err := state.Open(statePath)
 	if err != nil {
 		return runtime{}, err
 	}
-	imp := importer.New(cfg, store)
+	imp := importer.New(cfg, store, aiProvider)
 	return runtime{logger: logger, cfg: cfg, store: store, imp: imp}, nil
 }
 
@@ -91,6 +114,31 @@ func defaultStatePath() string {
 		return filepath.Join(".", ".local", "state", "inkflow", "state.db")
 	}
 	return filepath.Join(home, ".local", "state", "inkflow", "state.db")
+}
+
+func anyRouteWantsAI(routes []config.Route) bool {
+	for _, r := range routes {
+		if r.AI {
+			return true
+		}
+	}
+	return false
+}
+
+func resolveAPIKey(cfg config.GeminiConfig) (string, error) {
+	if key := strings.TrimSpace(os.Getenv("GEMINI_API_KEY")); key != "" {
+		return key, nil
+	}
+	if cfg.APIKeyFile != "" {
+		data, err := os.ReadFile(cfg.APIKeyFile)
+		if err != nil {
+			return "", fmt.Errorf("read %s: %w", cfg.APIKeyFile, err)
+		}
+		if key := strings.TrimSpace(string(data)); key != "" {
+			return key, nil
+		}
+	}
+	return "", fmt.Errorf("gemini: no API key — set $GEMINI_API_KEY or [gemini].api_key_file")
 }
 
 func newServeCmd() *cobra.Command {

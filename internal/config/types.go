@@ -11,7 +11,8 @@ type Config struct {
 	DefaultNoteDir string `toml:"default_note_dir" json:"default_note_dir"`
 	StateFile      string `toml:"state_file" json:"state_file"`
 
-	Routes []Route `toml:"route" json:"route"`
+	Gemini GeminiConfig `toml:"gemini" json:"gemini"`
+	Routes []Route      `toml:"route" json:"route"`
 }
 
 type Route struct {
@@ -21,4 +22,13 @@ type Route struct {
 	NoteName string `toml:"note_name" json:"note_name"`
 	PDFName  string `toml:"pdf_name" json:"pdf_name"`
 	Template string `toml:"template" json:"template"`
+	AI       bool   `toml:"ai" json:"ai"`
+}
+
+type GeminiConfig struct {
+	APIKeyFile    string `toml:"api_key_file" json:"api_key_file"`
+	Model         string `toml:"model" json:"model"`
+	Timeout       string `toml:"timeout" json:"timeout"`
+	OCRPrompt     string `toml:"ocr_prompt" json:"ocr_prompt"`
+	SummaryPrompt string `toml:"summary_prompt" json:"summary_prompt"`
 }

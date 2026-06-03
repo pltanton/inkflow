@@ -1,5 +1,13 @@
 vault_dir = "/home/anton/Obsidian"
 
+[gemini]
+# Reads $GEMINI_API_KEY; falls back to api_key_file if the env var is empty.
+api_key_file = "/run/secrets/gemini-api-key"
+model = "gemini-2.5-flash"
+timeout = "60s"
+ocr_prompt = "Transcribe the page faithfully. Preserve line breaks when useful. Keep the source language. Do not translate or summarize."
+summary_prompt = "Summarize as 3-5 short bullets covering action items, decisions, deadlines, people. Use the same language as the source."
+
 [[route]]
 from = "Syncs/"
 pdf_dir = "_files/Attachments/Boox/Syncs"
@@ -7,6 +15,7 @@ note_dir = "02. Areas/Wallet/Syncs"
 note_name = "{stem}.md"
 pdf_name = "{stem}.pdf"
 template = "sync"
+ai = true
 
 [[route]]
 from = "Meetings/"

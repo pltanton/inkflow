@@ -38,6 +38,18 @@ func applyDefaults(cfg *Config) {
 	if cfg.DefaultNoteDir == "" {
 		cfg.DefaultNoteDir = "00 Inbox"
 	}
+	if cfg.Gemini.Model == "" {
+		cfg.Gemini.Model = "gemini-2.5-flash"
+	}
+	if cfg.Gemini.Timeout == "" {
+		cfg.Gemini.Timeout = "60s"
+	}
+	if cfg.Gemini.OCRPrompt == "" {
+		cfg.Gemini.OCRPrompt = "Transcribe the page faithfully. Preserve line breaks when useful. Keep the source language. Do not translate or summarize."
+	}
+	if cfg.Gemini.SummaryPrompt == "" {
+		cfg.Gemini.SummaryPrompt = "Summarize as 3-5 short bullets covering action items, decisions, deadlines, people. Use the same language as the source."
+	}
 }
 
 func validate(cfg *Config) error {
