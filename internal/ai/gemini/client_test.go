@@ -178,3 +178,36 @@ func TestProcessTruncatedResponseSurfacesFinishReason(t *testing.T) {
 		t.Errorf("error does not mention finish reason: %v", err)
 	}
 }
+
+func TestProcessUnescapesDoublyEscapedNewlines(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		inner, _ := json.Marshal(map[string]any{
+			"ocr_text": `line one\nline two\nline three`,
+			"summary":  []string{`bullet\nwith escaped newline`, "plain bullet"},
+		})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"candidates": []map[string]any{{
+				"content": map[string]any{
+					"parts": []map[string]any{{"text": string(inner)}},
+				},
+				"finishReason": "STOP",
+			}},
+		})
+	})
+	res, err := c.Process(context.Background(), bytes.NewReader([]byte("x")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(res.OCR, `\n`) {
+		t.Errorf("OCR still contains literal \\n: %q", res.OCR)
+	}
+	if strings.Count(res.OCR, "\n") != 2 {
+		t.Errorf("expected 2 real newlines in OCR, got: %q", res.OCR)
+	}
+	if strings.Contains(res.Summary[0], `\n`) {
+		t.Errorf("summary[0] still contains literal \\n: %q", res.Summary[0])
+	}
+	if res.Summary[1] != "plain bullet" {
+		t.Errorf("plain bullet got mangled: %q", res.Summary[1])
+	}
+}

@@ -142,7 +142,20 @@ func parseResponse(body []byte) (ai.Result, error) {
 	if err := json.Unmarshal([]byte(raw), &inner); err != nil {
 		return ai.Result{}, fmt.Errorf("parse JSON-mode payload: %w", err)
 	}
-	return ai.Result{OCR: inner.OCRText, Summary: inner.Summary}, nil
+	summary := make([]string, len(inner.Summary))
+	for i, s := range inner.Summary {
+		summary[i] = unescapeNewlines(s)
+	}
+	return ai.Result{OCR: unescapeNewlines(inner.OCRText), Summary: summary}, nil
+}
+
+// unescapeNewlines repairs Gemini's JSON-mode output when the model
+// double-escapes newlines (writes `\\n` in its JSON, which parses to two
+// literal characters `\` and `n` instead of a real newline). Handwritten
+// notes essentially never contain a literal backslash-n, so converting
+// every occurrence is a safe defensive fix.
+func unescapeNewlines(s string) string {
+	return strings.ReplaceAll(s, `\n`, "\n")
 }
 
 // extractErrorMessage pulls error.message out of a Gemini error body so the
