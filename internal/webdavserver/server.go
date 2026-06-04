@@ -23,10 +23,10 @@ type Server struct {
 
 func Serve(ctx context.Context, cfg *config.Config, imp *importer.Importer, logger *slog.Logger) error {
 	if cfg.WebDAVUser == "" {
-		cfg.WebDAVUser = os.Getenv("INKFLOW_WEBDAV_USER")
+		cfg.WebDAVUser = os.Getenv("WEBDAV_USER")
 	}
 	if cfg.WebDAVPass == "" {
-		cfg.WebDAVPass = os.Getenv("INKFLOW_WEBDAV_PASS")
+		cfg.WebDAVPass = os.Getenv("WEBDAV_PASS")
 	}
 	srv := &Server{cfg: cfg, imp: imp, logger: logger}
 	httpSrv := &http.Server{Addr: cfg.ListenAddr, Handler: srv}

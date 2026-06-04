@@ -29,7 +29,7 @@ The resulting file as it appears in Obsidian.
 
 `listen_addr` defaults to `127.0.0.1:8080`.
 
-`webdav_user` and `webdav_pass` can be set in TOML or through `INKFLOW_WEBDAV_USER` and `INKFLOW_WEBDAV_PASS`.
+`webdav_user` and `webdav_pass` can be set in TOML or through `WEBDAV_USER` and `WEBDAV_PASS` env vars.
 
 `state_file` defaults to `XDG_STATE_HOME/inkflow/state.db`, then `~/.local/state/inkflow/state.db`.
 
