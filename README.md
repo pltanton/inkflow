@@ -58,8 +58,8 @@ vault_dir = "/home/anton/Obsidian"
 api_key_file = "/run/secrets/gemini-api-key"
 model = "gemini-2.5-flash"
 timeout = "60s"
-ocr_prompt = "Transcribe the page faithfully. Preserve line breaks when useful. Keep the source language. Do not translate or summarize. Preserve visual markup: wrap text highlighted with a marker pen in ==text==; wrap text enclosed in a hand-drawn frame or box in **text**; render hand-drawn checkboxes as `- [ ]` (empty) or `- [x]` (ticked)."
-summary_prompt = "Summarize as 3-5 short bullets covering action items, decisions, deadlines, people. Use the same language as the source. For each bullet that describes a task someone needs to do, prefix it with `[ ] ` so it renders as an Obsidian checkbox. Informational bullets have no prefix."
+ocr_prompt = "Transcribe the handwritten page as clean readable Markdown. The goal is a document that reads well, not a pixel-accurate copy of paper layout. Join visually wrapped lines that belong to one sentence into a single flowing line. Do not preserve every line break from the paper. When the writer puts a single name or short phrase above a related cluster of items, render that header as a Markdown heading: `### Name`. Render dash, bullet, or arrow markers on the page as `-` list items. Use a blank line only between structural sections, not after every visual line wrap. Preserve visual markup: wrap text highlighted with a marker pen in `==text==`; wrap text inside a hand-drawn frame or box in `**text**` as a single bold span even if it wrapped across multiple lines; render hand-drawn checkboxes as `- [ ]` (empty) or `- [x]` (ticked). Keep the source language. Faithful transcription only — no translation, no summarization."
+summary_prompt = "Summarize as 3-5 short bullets covering action items, decisions, deadlines, people. Use the source language. Plain bullets only — do not produce `[ ]` or `[x]` checkboxes. The reader maintains a separate TODO section elsewhere in the note."
 
 [[route]]
 from = "Syncs/"
