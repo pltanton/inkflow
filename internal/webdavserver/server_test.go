@@ -273,3 +273,52 @@ func TestPutSurfacesEmptyAIResultInBothBlocks(t *testing.T) {
 		t.Fatalf("expected empty-summary placeholder:\n%s", s)
 	}
 }
+
+// countingAIClient counts calls so a test can assert how many times the AI
+// provider was invoked across multiple uploads.
+type countingAIClient struct {
+	result ai.Result
+	calls  *int
+}
+
+func (c countingAIClient) Process(ctx context.Context, pdf io.Reader) (ai.Result, error) {
+	*c.calls++
+	_, _ = io.Copy(io.Discard, pdf)
+	return c.result, nil
+}
+
+func TestPutDuplicateUploadSkipsAICall(t *testing.T) {
+	vaultDir := t.TempDir()
+	statePath := filepath.Join(t.TempDir(), "state.db")
+	store, err := state.Open(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	cfg := &config.Config{
+		VaultDir:       vaultDir,
+		DefaultPDFDir:  "pdfs",
+		DefaultNoteDir: "notes",
+		Routes:         []config.Route{{From: "Syncs/", Template: "default", AI: true}},
+	}
+	calls := 0
+	imp := importer.New(cfg, store, countingAIClient{
+		result: ai.Result{OCR: "transcript", Summary: []string{"bullet"}},
+		calls:  &calls,
+	})
+	srv := &Server{cfg: cfg, imp: imp}
+
+	body := []byte("identical-pdf-bytes")
+	for i := range 2 {
+		req := httptest.NewRequest("PUT", "/Syncs/2026-06-04%20dup.pdf", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		if rec.Code != 201 {
+			t.Fatalf("attempt %d: status = %d body=%s", i, rec.Code, rec.Body.String())
+		}
+	}
+	if calls != 1 {
+		t.Errorf("expected ai.Provider.Process called exactly once across two identical uploads, got %d", calls)
+	}
+}

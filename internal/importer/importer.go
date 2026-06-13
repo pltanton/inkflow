@@ -52,6 +52,16 @@ func (i *Importer) Import(ctx context.Context, input string, reader io.Reader, m
 	if err != nil {
 		return nil, err
 	}
+	// Dedup: if we already imported the exact same bytes into the same vault
+	// paths, there's nothing useful to redo — the PDF on disk is identical,
+	// the marker blocks already hold the previous AI output, and a re-run
+	// would only burn Gemini tokens and produce visible flicker. A route
+	// change (different PDFRel/NoteRel) bypasses dedup so files land in the
+	// new location.
+	if existing != nil && existing.SHA256 == sha &&
+		existing.VaultPDFPath == t.PDFRel && existing.VaultNotePath == t.NoteRel {
+		return existing, nil
+	}
 	return i.persist(ctx, existing, input, modTime, sha, t, data)
 }
 
