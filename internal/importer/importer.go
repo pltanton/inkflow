@@ -27,13 +27,20 @@ type Importer struct {
 	store                *state.Store
 	ai                   ai.Provider
 	minReprocessInterval time.Duration
+	locks                *LockManager
 	writeNoteFn          func(plan.Result, string, string) error
 	saveRecordFn         func(string, *state.Record) error
 }
 
-func New(cfg *config.Config, store *state.Store, aiProvider ai.Provider, minReprocessInterval time.Duration) *Importer {
-	return &Importer{cfg: cfg, store: store, ai: aiProvider, minReprocessInterval: minReprocessInterval}
+func New(cfg *config.Config, store *state.Store, aiProvider ai.Provider, minReprocessInterval time.Duration, lockManagers ...*LockManager) *Importer {
+	locks := NewLockManager()
+	if len(lockManagers) > 0 && lockManagers[0] != nil {
+		locks = lockManagers[0]
+	}
+	return &Importer{cfg: cfg, store: store, ai: aiProvider, minReprocessInterval: minReprocessInterval, locks: locks}
 }
+
+func (i *Importer) Locks() *LockManager { return i.locks }
 
 func (i *Importer) Import(ctx context.Context, input string, reader io.Reader, modTime time.Time) (*state.Record, error) {
 	slog.Default().Debug("import_started", "source", input)
@@ -52,6 +59,8 @@ func (i *Importer) Import(ctx context.Context, input string, reader io.Reader, m
 	if err != nil {
 		return nil, err
 	}
+	unlock := i.locks.Lock(t.NoteRel)
+	defer unlock()
 	slog.Default().Debug("route_matched", "source", input, "pdf_rel", t.PDFRel, "note_rel", t.NoteRel, "template", t.Template, "ai", t.AI)
 	existing, hashMatch, err := i.lookupRecord(input, sha)
 	if err != nil {
@@ -259,39 +268,16 @@ func (i *Importer) persist(ctx context.Context, existing *state.Record, sourcePa
 	}
 
 	var summaryBody, ocrBody string
-	if t.AI && i.ai != nil {
-		slog.Default().Info("ai_called", "source", sourcePath, "sha256", sha)
-		res, err := i.ai.Process(ctx, bytes.NewReader(pdfData))
-		if err != nil {
-			slog.Default().Error("ai_failed", "source", sourcePath, "sha256", sha, "err", err)
-			msg := fmt.Sprintf("_AI failed: %s_", err.Error())
-			summaryBody, ocrBody = msg, msg
-			rec.AIStatus = state.AIStatusFailed
-			rec.AIRetryCount++
-			rec.AILastError = err.Error()
-			rec.AILastRetryAt = time.Now().UTC()
-		} else {
-			slog.Default().Info("ai_succeeded", "source", sourcePath, "sha256", sha, "ocr_chars", len(res.OCR), "summary_bullets", len(res.Summary))
-			if res.OCR != "" {
-				ocrBody = res.OCR
-			} else {
-				ocrBody = "_AI returned no transcription._"
-			}
-			if len(res.Summary) > 0 {
-				summaryBody = "- " + strings.Join(res.Summary, "\n- ")
-			} else {
-				summaryBody = "_AI returned no summary._"
-			}
-			rec.AIStatus = state.AIStatusSuccess
-			rec.AIRetryCount++
-			rec.AILastError = ""
-			rec.AILastRetryAt = time.Now().UTC()
-			rec.AILastSuccessAt = time.Now().UTC()
-		}
-	} else if !t.AI {
-		slog.Default().Debug("ai_skipped", "source", sourcePath, "reason", "route_ai_disabled")
+	if t.AI {
+		// AI work is durable and intentionally deferred to retry.Scheduler.
+		summaryBody, ocrBody = "_AI processing queued._", "_AI processing queued._"
+		rec.AIStatus = state.AIStatusPending
+		rec.AIRetryCount = 0
+		rec.AILastError = ""
+		rec.AILastRetryAt = time.Time{}
 	} else {
-		slog.Default().Debug("ai_skipped", "source", sourcePath, "reason", "no_provider_configured")
+		slog.Default().Debug("ai_skipped", "source", sourcePath, "reason", "route_ai_disabled")
+		rec.AIStatus = state.AIStatusSuccess
 	}
 
 	if err := i.writeNoteOutput(t, summaryBody, ocrBody); err != nil {

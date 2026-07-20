@@ -85,10 +85,8 @@ func TestImportLogsAISuccess(t *testing.T) {
 
 	importTestPDF(t, imp, "pdf-bytes")
 	output := logs.String()
-	called := strings.Index(output, "ai_called")
-	succeeded := strings.Index(output, "ai_succeeded")
-	if called < 0 || succeeded < called || !strings.Contains(output, "import_completed") {
-		t.Fatalf("expected successful AI event sequence:\n%s", output)
+	if strings.Contains(output, "ai_called") || !strings.Contains(output, "import_completed") {
+		t.Fatalf("upload called AI instead of queueing it:\n%s", output)
 	}
 }
 
@@ -98,10 +96,8 @@ func TestImportLogsAIFailureAndCompletes(t *testing.T) {
 
 	importTestPDF(t, imp, "pdf-bytes")
 	output := logs.String()
-	called := strings.Index(output, "ai_called")
-	failed := strings.Index(output, "ai_failed")
-	if called < 0 || failed < called || !strings.Contains(output, "gemini 429: rate limited") || !strings.Contains(output, "import_completed") {
-		t.Fatalf("expected failed AI event sequence and completion:\n%s", output)
+	if strings.Contains(output, "ai_called") || !strings.Contains(output, "import_completed") {
+		t.Fatalf("upload called AI instead of queueing it:\n%s", output)
 	}
 }
 
@@ -115,8 +111,8 @@ func TestImportLogsDedupSkippedWithoutSecondAICall(t *testing.T) {
 	if !strings.Contains(output, "dedup_skipped") {
 		t.Fatalf("missing dedup log:\n%s", output)
 	}
-	if provider.calls != 1 || strings.Count(output, "ai_called") != 1 {
-		t.Fatalf("AI calls = %d, ai_called logs = %d, want 1:\n%s", provider.calls, strings.Count(output, "ai_called"), output)
+	if provider.calls != 0 || strings.Count(output, "ai_called") != 0 {
+		t.Fatalf("AI calls = %d, ai_called logs = %d, want 0:\n%s", provider.calls, strings.Count(output, "ai_called"), output)
 	}
 }
 
@@ -259,8 +255,8 @@ func TestImportRelocatesHashMatchedRenameWithoutAI(t *testing.T) {
 	if !bytes.Equal(note, manual) {
 		t.Fatalf("relocated note = %q, want %q", note, manual)
 	}
-	if provider.calls != 1 {
-		t.Fatalf("AI calls = %d, want 1", provider.calls)
+	if provider.calls != 0 {
+		t.Fatalf("AI calls = %d, want 0", provider.calls)
 	}
 	if rec.SourcePath != secondSource || rec.VaultPDFPath != "pdfs/2026-06-04-renamed.pdf" || rec.VaultNotePath != "notes/2026-06-04 renamed.md" {
 		t.Fatalf("relocated record = %+v", rec)
@@ -315,8 +311,8 @@ func TestImportFailedAIReimportPreservesSuccessfulMarkersByDefault(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(content), "successful ocr") || !strings.Contains(string(content), "successful summary") || strings.Contains(string(content), "_AI failed:") {
-		t.Fatalf("successful markers were not preserved:\n%s", content)
+	if strings.Count(string(content), "_AI processing queued._") != 2 {
+		t.Fatalf("queued markers missing:\n%s", content)
 	}
 }
 
@@ -333,8 +329,8 @@ func TestImportFailedAIReimportCanReplaceMarkersWithRoutePolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(content), "successful ocr") || strings.Contains(string(content), "successful summary") || strings.Count(string(content), "_AI failed: temporary failure_") != 2 {
-		t.Fatalf("failure markers were not replaced:\n%s", content)
+	if strings.Count(string(content), "_AI processing queued._") != 2 {
+		t.Fatalf("queued markers missing:\n%s", content)
 	}
 }
 
@@ -347,8 +343,8 @@ func TestImportFailedAIWritesMarkersWhenNoPriorContentExists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(string(content), "_AI failed: temporary failure_") != 2 {
-		t.Fatalf("failure markers missing:\n%s", content)
+	if strings.Count(string(content), "_AI processing queued._") != 2 {
+		t.Fatalf("queued markers missing:\n%s", content)
 	}
 }
 
@@ -367,8 +363,8 @@ func TestImportFailurePreservesPriorAIMarkers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(noteData), "first OCR") || !strings.Contains(string(noteData), "first summary") || strings.Contains(string(noteData), "_AI failed:") {
-		t.Fatalf("successful marker content was not preserved:\n%s", noteData)
+	if strings.Count(string(noteData), "_AI processing queued._") != 2 {
+		t.Fatalf("queued markers missing:\n%s", noteData)
 	}
 }
 
@@ -382,8 +378,8 @@ func TestImportFailureWritesMarkersWithoutPriorSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(string(noteData), "_AI failed: temporary failure_") != 2 {
-		t.Fatalf("failure markers missing:\n%s", noteData)
+	if strings.Count(string(noteData), "_AI processing queued._") != 2 {
+		t.Fatalf("queued markers missing:\n%s", noteData)
 	}
 }
 
@@ -396,8 +392,8 @@ func TestImportAISuccessRecordsLastSuccessAt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored == nil || stored.AILastSuccessAt.IsZero() {
-		t.Fatal("AILastSuccessAt is zero after successful AI import")
+	if stored == nil || stored.AIStatus != state.AIStatusPending {
+		t.Fatal("record is not pending after queued AI import")
 	}
 }
 
@@ -414,19 +410,18 @@ func TestImportDebouncesRecentWrapperRewrite(t *testing.T) {
 	}
 
 	rec := importDebouncePDF(t, imp, "second-pdf")
-	if provider.calls != 1 {
-		t.Fatalf("AI calls = %d, want 1", provider.calls)
+	if provider.calls != 0 {
+		t.Fatalf("AI calls = %d, want 0", provider.calls)
 	}
-	if !strings.Contains(logs.String(), "ai_skipped") || !strings.Contains(logs.String(), "reason=debounced_wrapper_rewrite") {
-		t.Fatalf("missing debounced wrapper rewrite log:\n%s", logs.String())
+	if strings.Contains(logs.String(), "debounced_wrapper_rewrite") {
+		t.Fatalf("pending work must not be debounced:\n%s", logs.String())
 	}
 	noteAfter, err := os.ReadFile(notePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(noteBefore, noteAfter) {
-		t.Fatal("note changed during debounced wrapper rewrite")
-	}
+	_ = noteBefore
+	_ = noteAfter
 	pdfAfter, err := os.ReadFile(pdfPath)
 	if err != nil {
 		t.Fatal(err)
@@ -453,15 +448,15 @@ func TestImportWrapperRewriteRunsAIWhenDebounceDisabled(t *testing.T) {
 	importDebouncePDF(t, imp, "first-pdf")
 	provider.result = ai.Result{OCR: "second ocr"}
 	importDebouncePDF(t, imp, "second-pdf")
-	if provider.calls != 2 {
-		t.Fatalf("AI calls = %d, want 2", provider.calls)
+	if provider.calls != 0 {
+		t.Fatalf("AI calls = %d, want 0", provider.calls)
 	}
 	note, err := os.ReadFile(filepath.Join(cfg.VaultDir, "notes", "2026-06-04 note.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(note), "second ocr") || strings.Contains(string(note), "first ocr") {
-		t.Fatalf("note was not rewritten with current AI output:\n%s", note)
+	if strings.Count(string(note), "_AI processing queued._") != 2 {
+		t.Fatalf("note was not queued with current upload:\n%s", note)
 	}
 }
 
@@ -473,8 +468,8 @@ func TestImportDoesNotDebounceFailedAI(t *testing.T) {
 	provider.err = nil
 	provider.result = ai.Result{OCR: "second ocr"}
 	importDebouncePDF(t, imp, "second-pdf")
-	if provider.calls != 2 {
-		t.Fatalf("AI calls = %d, want 2 after failed first attempt", provider.calls)
+	if provider.calls != 0 {
+		t.Fatalf("AI calls = %d, want 0", provider.calls)
 	}
 }
 
@@ -487,8 +482,8 @@ func TestImportDoesNotDebounceRouteOutputPathChange(t *testing.T) {
 	cfg.DefaultNoteDir = "moved-notes"
 	provider.result = ai.Result{OCR: "second ocr"}
 	importDebouncePDF(t, imp, "second-pdf")
-	if provider.calls != 2 {
-		t.Fatalf("AI calls = %d, want 2 after route output path change", provider.calls)
+	if provider.calls != 0 {
+		t.Fatalf("AI calls = %d, want 0", provider.calls)
 	}
 	if _, err := os.Stat(filepath.Join(cfg.VaultDir, "moved-pdfs", "2026-06-04-note.pdf")); err != nil {
 		t.Fatalf("moved PDF missing: %v", err)

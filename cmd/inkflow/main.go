@@ -212,11 +212,14 @@ func loadRuntime(logger *slog.Logger, configPath string) (runtime, error) {
 	if err != nil {
 		return runtime{}, err
 	}
-	imp := importer.New(cfg, store, aiProvider, cfg.Gemini.MinReprocessIntervalDuration)
+	locks := importer.NewLockManager()
+	imp := importer.New(cfg, store, aiProvider, cfg.Gemini.MinReprocessIntervalDuration, locks)
 
+	// The retry scheduler is also the durable queue worker. It must run even
+	// when failed-import retries are disabled so pending uploads are processed.
 	var sched *retry.Scheduler
-	if cfg.Gemini.Retry.Enabled {
-		sched = retry.NewScheduler(store, imp, cfg.Gemini.Retry)
+	if anyRouteWantsAI(cfg.Routes) {
+		sched = retry.NewScheduler(store, imp, cfg.Gemini.Retry, locks)
 	}
 
 	return runtime{logger: logger, cfg: cfg, store: store, imp: imp, scheduler: sched}, nil

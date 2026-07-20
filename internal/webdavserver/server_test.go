@@ -160,6 +160,49 @@ type fakeAIClient struct {
 	err    error
 }
 
+type blockingAIClient struct{ started chan struct{} }
+
+func (f blockingAIClient) Process(ctx context.Context, _ io.Reader) (ai.Result, error) {
+	close(f.started)
+	<-ctx.Done()
+	return ai.Result{}, ctx.Err()
+}
+
+func TestPutWithAIQueuesWithoutWaitingForProvider(t *testing.T) {
+	vaultDir := t.TempDir()
+	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	cfg := &config.Config{VaultDir: vaultDir, DefaultPDFDir: "pdfs", DefaultNoteDir: "notes", Routes: []config.Route{{From: "Syncs/", AI: true}}}
+	started := make(chan struct{})
+	srv := &Server{cfg: cfg, imp: importer.New(cfg, store, blockingAIClient{started: started}, 0)}
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/Syncs/2026-06-04%20queued.pdf", bytes.NewBufferString("pdf")))
+		done <- rec
+	}()
+	select {
+	case rec := <-done:
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status = %d", rec.Code)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("PUT waited for AI provider")
+	}
+	select {
+	case <-started:
+		t.Fatal("PUT called AI provider")
+	default:
+	}
+	stored, err := store.GetBySourcePath("Syncs/2026-06-04 queued.pdf")
+	if err != nil || stored == nil || stored.AIStatus != state.AIStatusPending {
+		t.Fatalf("queued record = %+v, err=%v", stored, err)
+	}
+}
+
 func (f fakeAIClient) Process(ctx context.Context, pdf io.Reader) (ai.Result, error) {
 	_, _ = io.Copy(io.Discard, pdf)
 	return f.result, f.err
@@ -197,10 +240,10 @@ func TestPutImportsFileWithAIBlocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(body)
-	if !strings.Contains(s, "## Summary") || !strings.Contains(s, "- alpha") || !strings.Contains(s, "- beta") {
+	if !strings.Contains(s, "## Summary") || !strings.Contains(s, "_AI processing queued._") {
 		t.Fatalf("summary block missing:\n%s", s)
 	}
-	if !strings.Contains(s, "## OCR") || !strings.Contains(s, "full transcript") {
+	if !strings.Contains(s, "## OCR") || !strings.Contains(s, "_AI processing queued._") {
 		t.Fatalf("ocr block missing:\n%s", s)
 	}
 }
@@ -236,11 +279,11 @@ func TestPutSurfacesAIErrorInBothBlocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(body)
-	if !strings.Contains(s, "_AI failed: gemini 401: API key invalid_") {
-		t.Fatalf("expected AI error in note:\n%s", s)
+	if !strings.Contains(s, "_AI processing queued._") {
+		t.Fatalf("expected queued AI marker in note:\n%s", s)
 	}
-	if strings.Count(s, "_AI failed:") < 2 {
-		t.Fatalf("expected error in both blocks (summary + ocr):\n%s", s)
+	if strings.Count(s, "_AI processing queued._") != 2 {
+		t.Fatalf("expected queued marker in both blocks:\n%s", s)
 	}
 }
 
@@ -332,8 +375,8 @@ func TestPutReUploadReplacesAIBlocks(t *testing.T) {
 	if strings.Contains(s, "first ocr") || strings.Contains(s, "first bullet") {
 		t.Fatalf("first-upload content survived in note:\n%s", s)
 	}
-	if !strings.Contains(s, "second ocr") || !strings.Contains(s, "- second bullet") {
-		t.Fatalf("second-upload content missing:\n%s", s)
+	if strings.Count(s, "_AI processing queued._") != 2 {
+		t.Fatalf("queued content missing:\n%s", s)
 	}
 	if strings.Count(s, "## OCR") != 1 || strings.Count(s, "## Summary") != 1 {
 		t.Fatalf("marker block appended instead of replaced:\n%s", s)
@@ -371,11 +414,11 @@ func TestPutSurfacesEmptyAIResultInBothBlocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(body)
-	if !strings.Contains(s, "_AI returned no transcription._") {
-		t.Fatalf("expected empty-OCR placeholder:\n%s", s)
+	if !strings.Contains(s, "_AI processing queued._") {
+		t.Fatalf("expected queued placeholder:\n%s", s)
 	}
-	if !strings.Contains(s, "_AI returned no summary._") {
-		t.Fatalf("expected empty-summary placeholder:\n%s", s)
+	if strings.Count(s, "_AI processing queued._") != 2 {
+		t.Fatalf("expected queued placeholders:\n%s", s)
 	}
 }
 
@@ -423,8 +466,8 @@ func TestPutDuplicateUploadSkipsAICall(t *testing.T) {
 			t.Fatalf("attempt %d: status = %d body=%s", i, rec.Code, rec.Body.String())
 		}
 	}
-	if calls != 1 {
-		t.Errorf("expected ai.Provider.Process called exactly once across two identical uploads, got %d", calls)
+	if calls != 0 {
+		t.Errorf("expected queued upload not to call ai.Provider.Process, got %d", calls)
 	}
 }
 
@@ -462,17 +505,17 @@ func TestPutAISuccessStoresAIStatusSuccess(t *testing.T) {
 	if stored == nil {
 		t.Fatal("no record stored")
 	}
-	if stored.AIStatus != state.AIStatusSuccess {
-		t.Errorf("AIStatus = %q, want %q", stored.AIStatus, state.AIStatusSuccess)
+	if stored.AIStatus != state.AIStatusPending {
+		t.Errorf("AIStatus = %q, want %q", stored.AIStatus, state.AIStatusPending)
 	}
-	if stored.AIRetryCount != 1 {
-		t.Errorf("AIRetryCount = %d, want 1", stored.AIRetryCount)
+	if stored.AIRetryCount != 0 {
+		t.Errorf("AIRetryCount = %d, want 0", stored.AIRetryCount)
 	}
 	if stored.AILastError != "" {
 		t.Errorf("AILastError = %q, want empty string", stored.AILastError)
 	}
-	if stored.AILastRetryAt.IsZero() {
-		t.Error("AILastRetryAt is zero, want a non-zero timestamp")
+	if !stored.AILastRetryAt.IsZero() {
+		t.Error("AILastRetryAt is non-zero before worker processing")
 	}
 }
 
@@ -508,8 +551,8 @@ func TestPutAIFailureStoresAIStatusFailed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(body), "_AI failed: gemini 503: service unavailable_") {
-		t.Errorf("error marker block missing from note:\n%s", string(body))
+	if !strings.Contains(string(body), "_AI processing queued._") {
+		t.Errorf("queued marker block missing from note:\n%s", string(body))
 	}
 
 	// New behaviour: AI status is persisted in the state record.
@@ -520,16 +563,16 @@ func TestPutAIFailureStoresAIStatusFailed(t *testing.T) {
 	if stored == nil {
 		t.Fatal("no record stored")
 	}
-	if stored.AIStatus != state.AIStatusFailed {
-		t.Errorf("AIStatus = %q, want %q", stored.AIStatus, state.AIStatusFailed)
+	if stored.AIStatus != state.AIStatusPending {
+		t.Errorf("AIStatus = %q, want %q", stored.AIStatus, state.AIStatusPending)
 	}
-	if stored.AIRetryCount != 1 {
-		t.Errorf("AIRetryCount = %d, want 1", stored.AIRetryCount)
+	if stored.AIRetryCount != 0 {
+		t.Errorf("AIRetryCount = %d, want 0", stored.AIRetryCount)
 	}
-	if stored.AILastError == "" {
-		t.Error("AILastError is empty, want error message")
+	if stored.AILastError != "" {
+		t.Error("AILastError is non-empty before worker processing")
 	}
-	if stored.AILastRetryAt.IsZero() {
-		t.Error("AILastRetryAt is zero, want a non-zero timestamp")
+	if !stored.AILastRetryAt.IsZero() {
+		t.Error("AILastRetryAt is non-zero before worker processing")
 	}
 }
