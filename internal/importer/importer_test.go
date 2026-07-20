@@ -151,6 +151,164 @@ func hashString(s string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func TestImportPersistsNewAndSamePath(t *testing.T) {
+	tests := []struct {
+		name    string
+		uploads []string
+	}{
+		{name: "new import", uploads: []string{"first PDF"}},
+		{name: "same path re-import", uploads: []string{"first PDF", "replacement PDF"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			imp, _ := newTestImporter(t, nil, false)
+			const source = "Syncs/2026-06-04 note.pdf"
+			for _, upload := range tt.uploads {
+				if _, err := imp.Import(context.Background(), source, strings.NewReader(upload), time.Now().UTC()); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			pdfPath := filepath.Join(imp.cfg.VaultDir, "pdfs", "2026-06-04-note.pdf")
+			pdf, err := os.ReadFile(pdfPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantPDF := tt.uploads[len(tt.uploads)-1]
+			if string(pdf) != wantPDF {
+				t.Fatalf("vault PDF = %q, want %q", pdf, wantPDF)
+			}
+			notePath := filepath.Join(imp.cfg.VaultDir, "notes", "2026-06-04 note.md")
+			noteData, err := os.ReadFile(notePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, text := range []string{"# note", "Source PDF: ![[pdfs/2026-06-04-note.pdf]]"} {
+				if !strings.Contains(string(noteData), text) {
+					t.Errorf("note missing rendered text %q:\n%s", text, noteData)
+				}
+			}
+			stored, err := imp.store.GetBySourcePath(source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stored == nil || stored.SHA256 != hashString(wantPDF) || stored.VaultPDFPath != "pdfs/2026-06-04-note.pdf" || stored.VaultNotePath != "notes/2026-06-04 note.md" || stored.AIStatus != state.AIStatusSuccess {
+				t.Fatalf("stored record = %+v", stored)
+			}
+		})
+	}
+}
+
+func TestImportQueuesAIAndWriteNoteErrorRendersFailureMarkers(t *testing.T) {
+	imp, _ := newTestImporter(t, &testAIProvider{err: errors.New("provider unavailable")}, true)
+	const source = "Syncs/2026-06-04 note.pdf"
+	importTestPDF(t, imp, "PDF")
+
+	rec, err := imp.store.GetBySourcePath(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec == nil || rec.AIStatus != state.AIStatusPending {
+		t.Fatalf("record after async import = %+v, want pending", rec)
+	}
+	if err := imp.WriteNoteError(*rec, "_AI failed after 1 attempt: provider unavailable_"); err != nil {
+		t.Fatal(err)
+	}
+	noteData, err := os.ReadFile(filepath.Join(imp.cfg.VaultDir, "notes", "2026-06-04 note.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(noteData), "_AI failed after 1 attempt: provider unavailable_") != 2 {
+		t.Fatalf("failure markers missing:\n%s", noteData)
+	}
+}
+
+type failingWriteFileSystem struct {
+	fileSystem
+	failPath  string
+	remaining int
+}
+
+func (fs *failingWriteFileSystem) WriteFile(path string, data []byte, perm os.FileMode) error {
+	if path == fs.failPath && fs.remaining > 0 {
+		fs.remaining--
+		return errors.New("injected note write failure")
+	}
+	return fs.fileSystem.WriteFile(path, data, perm)
+}
+
+func TestImportRollbackOnNoteWriteFailureRestoresPriorSamePathContent(t *testing.T) {
+	imp, _ := newTestImporter(t, nil, false)
+	const source = "Syncs/2026-06-04 note.pdf"
+	importTestPDF(t, imp, "old PDF")
+
+	pdfPath := filepath.Join(imp.cfg.VaultDir, "pdfs", "2026-06-04-note.pdf")
+	notePath := filepath.Join(imp.cfg.VaultDir, "notes", "2026-06-04 note.md")
+	oldPDF, err := os.ReadFile(pdfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldNote, err := os.ReadFile(notePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := imp.store.GetBySourcePath(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lastSuccess := time.Now().Add(-time.Hour).UTC()
+	stored.AIRetryCount = 3
+	stored.AILastSuccessAt = lastSuccess
+	if err := imp.store.Put(stored); err != nil {
+		t.Fatal(err)
+	}
+	imp.files = &failingWriteFileSystem{fileSystem: osFileSystem{}, failPath: notePath, remaining: 1}
+
+	if _, err := imp.Import(context.Background(), source, strings.NewReader("replacement PDF"), time.Now().UTC()); err == nil {
+		t.Fatal("Import succeeded despite injected note write failure")
+	}
+	for _, check := range []struct {
+		path string
+		want []byte
+	}{{pdfPath, oldPDF}, {notePath, oldNote}} {
+		got, err := os.ReadFile(check.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, check.want) {
+			t.Errorf("%s = %q, want original %q", check.path, got, check.want)
+		}
+	}
+	stored, err = imp.store.GetBySourcePath(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.AIRetryCount != 3 || !stored.AILastSuccessAt.Equal(lastSuccess) || stored.SHA256 != hashString("old PDF") {
+		t.Fatalf("stored record changed after rollback: %+v", stored)
+	}
+}
+
+func TestRenderBodies(t *testing.T) {
+	tests := []struct {
+		name        string
+		result      ai.Result
+		wantSummary string
+		wantOCR     string
+	}{
+		{name: "content", result: ai.Result{OCR: "transcript", Summary: []string{"one", "two"}}, wantSummary: "- one\n- two", wantOCR: "transcript"},
+		{name: "empty result", wantSummary: "_AI returned no summary._", wantOCR: "_AI returned no transcription._"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			summary, ocr := renderBodies(tt.result)
+			if summary != tt.wantSummary || ocr != tt.wantOCR {
+				t.Fatalf("renderBodies() = (%q, %q), want (%q, %q)", summary, ocr, tt.wantSummary, tt.wantOCR)
+			}
+		})
+	}
+}
+
 func TestPersistSamePathWriteNoteFailurePreservesOutputs(t *testing.T) {
 	imp, existing, target, pdfPath, notePath := newRollbackTestImport(t, "pdfs/new.pdf", "notes/new.md")
 	imp.writeNoteFn = func(plan.Result, string, string) error { return errors.New("write note") }
