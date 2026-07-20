@@ -1,5 +1,9 @@
 vault_dir = "/home/anton/Obsidian"
 
+# [observability]
+# metrics_enabled = true
+# metrics_addr = "127.0.0.1:9090" # dedicated listener; keep private or network-protected
+
 # [ai]
 # provider = "gemini" # or "openai"
 

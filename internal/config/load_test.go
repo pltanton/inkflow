@@ -111,6 +111,48 @@ from = "Syncs/"
 	}
 }
 
+func TestLoadParsesOllamaProvider(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "inkflow.toml")
+	body := `
+vault_dir = "/tmp/vault"
+
+[ai]
+provider = "ollama"
+
+[ollama]
+model = "llama3.2-vision"
+
+[[route]]
+from = "Syncs/"
+ai = true
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.AI.Provider != "ollama" || cfg.Ollama.Model != "llama3.2-vision" {
+		t.Errorf("Ollama = %#v, provider = %q", cfg.Ollama, cfg.AI.Provider)
+	}
+	if cfg.Ollama.BaseURL != "http://localhost:11434" {
+		t.Errorf("default base URL = %q", cfg.Ollama.BaseURL)
+	}
+}
+
+func TestLoadRejectsOllamaWithoutModel(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "inkflow.toml")
+	body := "vault_dir = \"/tmp/vault\"\n[ai]\nprovider = \"ollama\"\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "ollama.model is required") {
+		t.Fatalf("expected required-model error, got %v", err)
+	}
+}
+
 func TestLoadRejectsUnknownAIProvider(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "inkflow.toml")
 	body := `
@@ -130,7 +172,7 @@ from = "Syncs/"
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !strings.Contains(err.Error(), `ai.provider must be "gemini" or "openai", got "bogus"`) {
+	if !strings.Contains(err.Error(), `ai.provider must be "gemini", "openai", or "ollama", got "bogus"`) {
 		t.Errorf("error = %q", err)
 	}
 }
@@ -510,6 +552,21 @@ func TestLoadParsesServerOverrides(t *testing.T) {
 	}
 	if cfg.ReadHeaderTimeoutDuration != time.Second || cfg.ReadTimeoutDuration != 3*time.Second || cfg.WriteTimeoutDuration != 4*time.Second || cfg.IdleTimeoutDuration != 5*time.Second || cfg.MaxUploadBytes != 42 {
 		t.Errorf("unexpected server overrides: %+v", cfg)
+	}
+}
+
+func TestLoadParsesObservabilityConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "inkflow.toml")
+	body := "vault_dir = \"/tmp/vault\"\n[observability]\nmetrics_enabled = true\nmetrics_addr = \"127.0.0.1:9090\"\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Observability.MetricsEnabled || cfg.Observability.MetricsAddr != "127.0.0.1:9090" {
+		t.Fatalf("observability = %+v", cfg.Observability)
 	}
 }
 

@@ -88,6 +88,26 @@ func TestLoadRuntimeOpenAIWithoutAIRouteSkipsKeyResolution(t *testing.T) {
 	t.Cleanup(func() { _ = rt.store.Close() })
 }
 
+func TestLoadRuntimeOllamaWithoutCredentials(t *testing.T) {
+	t.Setenv("GEMINI_API_KEY", "")
+	t.Setenv("OPENAI_API_KEY", "")
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "inkflow.toml")
+	contents := "vault_dir = \"" + filepath.Join(dir, "vault") + "\"\n" +
+		"state_file = \"state.db\"\n\n" +
+		"[ai]\nprovider = \"ollama\"\n\n" +
+		"[ollama]\nmodel = \"llama3.2-vision\"\n\n" +
+		"[[route]]\nfrom = \"/uploads\"\nai = true\n"
+	if err := os.WriteFile(configPath, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rt, err := loadRuntime(slog.Default(), configPath)
+	if err != nil {
+		t.Fatalf("Ollama should not require cloud credentials: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.store.Close() })
+}
+
 func loadOpenAIRuntime(t *testing.T, keyPath string) runtime {
 	t.Helper()
 	dir := t.TempDir()

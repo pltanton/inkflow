@@ -35,6 +35,15 @@ The resulting file as it appears in Obsidian.
 
 `template_dir`, if set, overrides the built-in templates in `internal/plan/templates`.
 
+### Health and metrics
+
+`GET /healthz` is unauthenticated and returns 200 only when the state store is
+readable. Prometheus metrics are disabled by default. Enable them with
+`[observability] metrics_enabled = true`; without `metrics_addr`, `/metrics`
+uses the normal WebDAV listener and its basic authentication. Setting
+`metrics_addr` starts a dedicated, unauthenticated metrics-only listener, so it
+MUST be bound to a private address or otherwise protected by network policy.
+
 ### AI OCR + Summary
 
 When a route has `ai = true`, inkflow sends the whole PDF to the selected AI provider in a single call (inline; no client-side rasterization). Gemini and OpenAI are supported. Select one with `[ai].provider`, which defaults to `"gemini"`.

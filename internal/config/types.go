@@ -26,10 +26,20 @@ type Config struct {
 	DefaultNoteDir string `toml:"default_note_dir" json:"default_note_dir"`
 	StateFile      string `toml:"state_file" json:"state_file"`
 
-	AI     AIConfig     `toml:"ai" json:"ai"`
-	Gemini GeminiConfig `toml:"gemini" json:"gemini"`
-	OpenAI OpenAIConfig `toml:"openai" json:"openai"`
-	Routes []Route      `toml:"route" json:"route"`
+	AI            AIConfig            `toml:"ai" json:"ai"`
+	Gemini        GeminiConfig        `toml:"gemini" json:"gemini"`
+	OpenAI        OpenAIConfig        `toml:"openai" json:"openai"`
+	Ollama        OllamaConfig        `toml:"ollama" json:"ollama"`
+	Observability ObservabilityConfig `toml:"observability" json:"observability"`
+	Routes        []Route             `toml:"route" json:"route"`
+}
+
+// ObservabilityConfig controls optional Prometheus metrics exposure.
+// A dedicated metrics listener is intentionally unauthenticated; bind it to a
+// private address or protect it at the network layer.
+type ObservabilityConfig struct {
+	MetricsEnabled bool   `toml:"metrics_enabled" json:"metrics_enabled"`
+	MetricsAddr    string `toml:"metrics_addr" json:"metrics_addr"`
 }
 
 // NormalizeRoutePrefix returns the canonical form used for route matching.
@@ -91,6 +101,16 @@ type AIConfig struct {
 
 type OpenAIConfig struct {
 	APIKeyFile    string `toml:"api_key_file" json:"api_key_file"`
+	Model         string `toml:"model" json:"model"`
+	Timeout       string `toml:"timeout" json:"timeout"`
+	OCRPrompt     string `toml:"ocr_prompt" json:"ocr_prompt"`
+	SummaryPrompt string `toml:"summary_prompt" json:"summary_prompt"`
+}
+
+// OllamaConfig configures a local Ollama vision model. Unlike cloud
+// providers, Ollama does not require an API key.
+type OllamaConfig struct {
+	BaseURL       string `toml:"base_url" json:"base_url"`
 	Model         string `toml:"model" json:"model"`
 	Timeout       string `toml:"timeout" json:"timeout"`
 	OCRPrompt     string `toml:"ocr_prompt" json:"ocr_prompt"`
