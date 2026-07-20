@@ -68,7 +68,7 @@ internal/note/block.go         Marker block insert/replace
 internal/state/store.go        BoltDB deduplication records
 ```
 
-Data flow: `PUT /path/file.pdf` → route match → SHA256 dedup check → template render → optional AI → write PDF + note.
+Data flow: `PUT /path/file.pdf` → route match → raw and stable PDF hash dedup check → template render → optional AI → write PDF + note.
 
 `ai.Provider` interface (`internal/ai/provider.go`) has one implementation: `gemini.Client`.
 
@@ -76,7 +76,7 @@ Data flow: `PUT /path/file.pdf` → route match → SHA256 dedup check → templ
 
 ## Non-Obvious Behaviors
 
-**Deduplication skips AI:** Same SHA256 + same vault paths → import skipped entirely, no AI call. Changing route (different pdf_dir/note_dir) bypasses dedup. Re-upload of identical PDF never refreshes AI output.
+**Deduplication skips AI:** Same SHA256 + same vault paths → import skipped entirely, no AI call. For the same WebDAV source and vault paths, a stable PDF hash also skips re-import when only volatile export metadata (dates or trailer ID) changed. Changing route (different pdf_dir/note_dir) bypasses dedup. Existing state records gain the stable hash on their next upload; a metadata-only change may therefore re-import once during migration.
 
 **Marker blocks replaced, not appended:** On re-upload, `<!-- inkflow:ocr:start -->` and `<!-- inkflow:summary:start -->` blocks are fully replaced. Previous content lost.
 

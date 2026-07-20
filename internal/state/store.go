@@ -28,6 +28,7 @@ type Store struct {
 type Record struct {
 	SourcePath    string    `json:"source_path"`
 	SHA256        string    `json:"sha256"`
+	ContentHash   string    `json:"content_hash,omitempty"`
 	SourceModTime time.Time `json:"source_mod_time"`
 	SourceSize    int64     `json:"source_size"`
 	VaultPDFPath  string    `json:"vault_pdf_path"`
