@@ -3,6 +3,7 @@ package plan
 import (
 	"embed"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,17 +51,23 @@ func RenderNoteBody(templateDir string, d NoteData) (string, error) {
 }
 
 func loadTemplateSource(templateDir, name string) (string, error) {
-	for _, candidate := range templateCandidates(name) {
-		if templateDir != "" {
+	candidates := templateCandidates(name)
+	if templateDir != "" {
+		for _, candidate := range candidates {
 			path := filepath.Join(templateDir, candidate)
 			if data, err := os.ReadFile(path); err == nil {
+				slog.Default().Debug("template_resolved", "name", name, "source", "custom", "candidate", candidate)
 				return string(data), nil
 			} else if !os.IsNotExist(err) {
 				return "", err
 			}
 		}
+	}
+	slog.Default().Debug("template_custom_not_found", "name", name, "template_dir", templateDir)
+	for _, candidate := range candidates {
 		data, err := embeddedTemplates.ReadFile(filepath.ToSlash(filepath.Join("templates", candidate)))
 		if err == nil {
+			slog.Default().Debug("template_resolved", "name", name, "source", "embedded", "candidate", candidate)
 			return string(data), nil
 		}
 	}

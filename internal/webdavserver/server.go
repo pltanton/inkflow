@@ -59,6 +59,7 @@ func Serve(ctx context.Context, cfg *config.Config, imp *importer.Importer, stor
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	clean := cleanPath(r.URL.Path)
 	if r.Method == http.MethodGet && r.URL.Path == "/healthz" {
 		s.handleHealth(w)
 		return
@@ -75,25 +76,28 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	clean := cleanPath(r.URL.Path)
 	s.info("webdav request", "method", r.Method, "path", clean, "depth", r.Header.Get("Depth"))
 	switch r.Method {
 	case http.MethodOptions:
-		w.Header().Set("Allow", "OPTIONS, PROPFIND, PUT")
+		w.Header().Set("Allow", "OPTIONS, PROPFIND, MKCOL, PUT")
 		w.Header().Set("DAV", "1,2")
 		w.WriteHeader(http.StatusNoContent)
 	case "PROPFIND":
 		s.handlePropfind(w, r)
+	case "MKCOL":
+		s.handleMkcol(w, r, clean)
 	case http.MethodPut:
 		s.handlePut(w, r, clean)
 	default:
-		w.Header().Set("Allow", "OPTIONS, PROPFIND, PUT")
+		w.Header().Set("Allow", "OPTIONS, PROPFIND, MKCOL, PUT")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
 func (s *Server) authorize(w http.ResponseWriter, r *http.Request) bool {
+	clean := cleanPath(r.URL.Path)
 	if s.cfg.WebDAVUser == "" && s.cfg.WebDAVPass == "" {
+		s.debug("auth_check", "authenticated", true, "path", clean)
 		return true
 	}
 	user, pass, ok := r.BasicAuth()
@@ -102,8 +106,11 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) bool {
 	configuredPass := sha256.Sum256([]byte(s.cfg.WebDAVPass))
 	suppliedPass := sha256.Sum256([]byte(pass))
 	if ok && subtle.ConstantTimeCompare(suppliedUser[:], configuredUser[:]) == 1 && subtle.ConstantTimeCompare(suppliedPass[:], configuredPass[:]) == 1 {
+		s.debug("auth_check", "authenticated", true, "path", clean)
 		return true
 	}
+	s.debug("auth_check", "authenticated", false, "path", clean)
+	s.debug("auth_rejected", "path", clean)
 	w.Header().Set("WWW-Authenticate", `Basic realm="inkflow"`)
 	http.Error(w, "unauthorized", http.StatusUnauthorized)
 	return false
@@ -127,6 +134,7 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request, clean string)
 	}
 	body := http.MaxBytesReader(w, r.Body, maxUploadBytes)
 	started := time.Now().UTC()
+	s.debug("import_dispatch", "path", clean)
 	rec, err := s.imp.Import(r.Context(), clean, body, started)
 	if err != nil {
 		var maxBytesErr *http.MaxBytesError
@@ -218,6 +226,59 @@ func (s *Server) handlePropfind(w http.ResponseWriter, r *http.Request) {
 	_ = xml.NewEncoder(w).Encode(multistatus{XMLName: xml.Name{Space: "DAV:", Local: "multistatus"}, XMLNSD: "DAV:", Responses: responses})
 }
 
+func (s *Server) handleMkcol(w http.ResponseWriter, r *http.Request, clean string) {
+	_, target, info, err := s.resolveVaultPathForCreate(r.URL.EscapedPath())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			s.debug("mkcol_conflict", "path", clean, "reason", "parent_not_found")
+			http.Error(w, "parent collection not found", http.StatusConflict)
+			return
+		}
+		s.debug("mkcol_rejected", "path", clean, "err", err)
+		http.Error(w, "invalid path", http.StatusBadRequest)
+		return
+	}
+	if info != nil {
+		if info.IsDir() {
+			s.debug("mkcol_already_exists", "path", clean)
+			http.Error(w, "collection already exists", http.StatusMethodNotAllowed)
+			return
+		}
+		s.debug("mkcol_conflict", "path", clean, "reason", "target_is_file")
+		http.Error(w, "target is not a collection", http.StatusConflict)
+		return
+	}
+
+	parentInfo, err := os.Lstat(filepath.Dir(target))
+	if err != nil || !parentInfo.IsDir() {
+		s.debug("mkcol_conflict", "path", clean, "reason", "parent_not_found")
+		http.Error(w, "parent collection not found", http.StatusConflict)
+		return
+	}
+	if parentInfo.Mode()&os.ModeSymlink != 0 {
+		s.debug("mkcol_rejected", "path", clean, "err", "symlink parent")
+		http.Error(w, "invalid path", http.StatusBadRequest)
+		return
+	}
+	if err := os.Mkdir(target, 0o755); err != nil {
+		if os.IsExist(err) {
+			if info, statErr := os.Lstat(target); statErr == nil && !info.IsDir() {
+				s.debug("mkcol_conflict", "path", clean, "reason", "target_is_file")
+				http.Error(w, "target is not a collection", http.StatusConflict)
+				return
+			}
+			s.debug("mkcol_already_exists", "path", clean)
+			http.Error(w, "collection already exists", http.StatusMethodNotAllowed)
+			return
+		}
+		s.error("webdav mkcol failed", "path", clean, "err", err)
+		http.Error(w, "unable to create collection", http.StatusInternalServerError)
+		return
+	}
+	s.debug("mkcol_created", "path", clean)
+	w.WriteHeader(http.StatusCreated)
+}
+
 func (s *Server) responseFor(clean string, info os.FileInfo) propResponse {
 	href := "/" + strings.TrimPrefix(clean, "/")
 	href = escapeHref(href)
@@ -246,6 +307,16 @@ func (s *Server) responseFor(clean string, info os.FileInfo) propResponse {
 // reaches the filesystem. Existing symlinks are deliberately rejected: DAV
 // browsing must not expose a target outside the configured vault.
 func (s *Server) resolveVaultPath(rawPath string) (string, string, os.FileInfo, error) {
+	return s.resolveVaultTarget(rawPath, false)
+}
+
+// resolveVaultPathForCreate validates a requested collection path while
+// allowing only its final component to be absent.
+func (s *Server) resolveVaultPathForCreate(rawPath string) (string, string, os.FileInfo, error) {
+	return s.resolveVaultTarget(rawPath, true)
+}
+
+func (s *Server) resolveVaultTarget(rawPath string, allowFinalMissing bool) (string, string, os.FileInfo, error) {
 	decoded, err := url.PathUnescape(rawPath)
 	if err != nil {
 		return "", "", nil, err
@@ -268,13 +339,17 @@ func (s *Server) resolveVaultPath(rawPath string) (string, string, os.FileInfo, 
 		return "", "", nil, err
 	}
 	target := root
-	for _, component := range strings.Split(clean, "/") {
+	components := strings.Split(clean, "/")
+	for index, component := range components {
 		if component == "" {
 			continue
 		}
 		target = filepath.Join(target, component)
 		info, err := os.Lstat(target)
 		if err != nil {
+			if allowFinalMissing && os.IsNotExist(err) && index == len(components)-1 {
+				return clean, target, nil, nil
+			}
 			return "", "", nil, err
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
@@ -319,6 +394,12 @@ func escapeHref(href string) string {
 func (s *Server) info(msg string, args ...any) {
 	if s != nil && s.logger != nil {
 		s.logger.Info(msg, args...)
+	}
+}
+
+func (s *Server) debug(msg string, args ...any) {
+	if s != nil && s.logger != nil {
+		s.logger.Debug(msg, args...)
 	}
 }
 
