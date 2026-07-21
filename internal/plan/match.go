@@ -2,6 +2,7 @@ package plan
 
 import (
 	"fmt"
+	"log/slog"
 	"path"
 	"strings"
 
@@ -35,8 +36,14 @@ func Select(routes []config.Route, sourcePath string) (Match, error) {
 		ambiguous = false
 	}
 	if ambiguous {
+		slog.Default().Debug("route_match_ambiguous", "source", sourcePath)
 		return Match{}, fmt.Errorf("ambiguous route match for %q", sourcePath)
 	}
+	if !best.Matched {
+		slog.Default().Debug("no_route_matched", "source", sourcePath)
+		return best, nil
+	}
+	slog.Default().Debug("route_match_selected", "source", sourcePath, "from", best.Route.From, "remainder", best.Remainder)
 	return best, nil
 }
 

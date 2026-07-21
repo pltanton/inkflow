@@ -46,12 +46,17 @@ func (i *Importer) Import(ctx context.Context, input string, reader io.Reader, m
 
 	t, err := plan.Build(i.cfg.Routes, i.cfg, input, modTime)
 	if err != nil {
+		slog.Default().Debug("route_not_matched", "source", input, "err", err)
 		return nil, err
 	}
+	slog.Default().Debug("route_matched", "source", input, "pdf_rel", t.PDFRel, "note_rel", t.NoteRel, "template", t.Template, "ai", t.AI)
+	slog.Default().Debug("filename_parsed", "source", input, "date", t.Date.Format("2006-01-02"), "title", t.Title, "tags", t.Tags)
 	existing, err := i.lookupRecord(input, sha)
 	if err != nil {
 		return nil, err
 	}
+	samePaths := existing != nil && existing.VaultPDFPath == t.PDFRel && existing.VaultNotePath == t.NoteRel
+	slog.Default().Debug("dedup_check", "source", input, "sha256", sha, "record_found", existing != nil, "same_paths", samePaths)
 	// Dedup: if we already imported the exact same bytes into the same vault
 	// paths, there's nothing useful to redo — the PDF on disk is identical,
 	// the marker blocks already hold the previous AI output, and a re-run
@@ -60,6 +65,7 @@ func (i *Importer) Import(ctx context.Context, input string, reader io.Reader, m
 	// new location.
 	if existing != nil && existing.SHA256 == sha &&
 		existing.VaultPDFPath == t.PDFRel && existing.VaultNotePath == t.NoteRel {
+		slog.Default().Info("dedup_skipped", "source", input, "sha256", sha, "note", t.NoteRel, "pdf", t.PDFRel)
 		return existing, nil
 	}
 	return i.persist(ctx, existing, input, modTime, sha, t, data)
@@ -99,6 +105,7 @@ func (i *Importer) persist(ctx context.Context, existing *state.Record, sourcePa
 	if err := os.WriteFile(pdfAbs, pdfData, 0o644); err != nil {
 		return nil, err
 	}
+	slog.Default().Debug("pdf_written", "path", pdfAbs, "bytes", len(pdfData))
 	rec := &state.Record{
 		SourcePath:    sourcePath,
 		SHA256:        sha,
@@ -121,8 +128,11 @@ func (i *Importer) persist(ctx context.Context, existing *state.Record, sourcePa
 
 	var summaryBody, ocrBody string
 	if t.AI && i.ai != nil {
+		slog.Default().Debug("ai_queued", "source", sourcePath, "route_ai_enabled", true)
+		slog.Default().Debug("ai_call_start", "source", sourcePath)
 		res, err := i.ai.Process(ctx, bytes.NewReader(pdfData))
 		if err != nil {
+			slog.Default().Debug("ai_call_failed", "source", sourcePath, "err", err)
 			msg := fmt.Sprintf("_AI failed: %s_", err.Error())
 			summaryBody, ocrBody = msg, msg
 			rec.AIStatus = state.AIStatusFailed
@@ -130,6 +140,7 @@ func (i *Importer) persist(ctx context.Context, existing *state.Record, sourcePa
 			rec.AILastError = err.Error()
 			rec.AILastRetryAt = time.Now().UTC()
 		} else {
+			slog.Default().Debug("ai_call_success", "source", sourcePath, "ocr_len", len(res.OCR), "summary_bullets", len(res.Summary))
 			if res.OCR != "" {
 				ocrBody = res.OCR
 			} else {
@@ -145,6 +156,8 @@ func (i *Importer) persist(ctx context.Context, existing *state.Record, sourcePa
 			rec.AILastError = ""
 			rec.AILastRetryAt = time.Now().UTC()
 		}
+	} else {
+		slog.Default().Debug("ai_skipped", "source", sourcePath, "reason", "route_ai_disabled_or_provider_unavailable")
 	}
 
 	if err := i.writeNote(t, summaryBody, ocrBody); err != nil {
@@ -185,6 +198,7 @@ func (i *Importer) writeNote(t plan.Result, summaryBody, ocrBody string) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	} else {
+		slog.Default().Debug("template_render_start", "template_dir", i.cfg.TemplateDir, "template", t.Template)
 		body, err := plan.RenderNoteBody(i.cfg.TemplateDir, plan.NoteData{
 			Date:       t.Date.Format("2006-01-02"),
 			Title:      t.Title,
@@ -195,6 +209,7 @@ func (i *Importer) writeNote(t plan.Result, summaryBody, ocrBody string) error {
 		if err != nil {
 			return err
 		}
+		slog.Default().Debug("template_rendered", "template", t.Template, "bytes", len(body))
 		content = body
 	}
 	content = note.UpsertMarkerBlock(content, "Summary", "summary", summaryBody)

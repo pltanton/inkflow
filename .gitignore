@@ -4,3 +4,4 @@ inkflow.local.toml
 .env
 docs/superpowers/
 inkflow
+inkflow-*

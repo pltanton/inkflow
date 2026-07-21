@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -47,6 +48,50 @@ func TestPutImportsFileIntoVault(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(vaultDir, "notes", "2026-05-06 Processing service.md")); err != nil {
 		t.Fatalf("note missing: %v", err)
+	}
+}
+
+func TestMkcolCreatesCollectionAndHandlesConflicts(t *testing.T) {
+	vault := t.TempDir()
+	if err := os.Mkdir(filepath.Join(vault, "existing"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vault, "file"), []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{cfg: &config.Config{VaultDir: vault}}
+	for _, tc := range []struct {
+		name string
+		path string
+		want int
+	}{
+		{name: "new directory", path: "/new", want: http.StatusCreated},
+		{name: "existing directory", path: "/existing", want: http.StatusMethodNotAllowed},
+		{name: "existing file", path: "/file", want: http.StatusConflict},
+		{name: "missing parent", path: "/missing/child", want: http.StatusConflict},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, httptest.NewRequest("MKCOL", tc.path, nil))
+			if rec.Code != tc.want {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.want, rec.Body.String())
+			}
+		})
+	}
+	if info, err := os.Stat(filepath.Join(vault, "new")); err != nil || !info.IsDir() {
+		t.Fatalf("new collection not created: info=%v err=%v", info, err)
+	}
+}
+
+func TestOptionsAdvertisesMkcol(t *testing.T) {
+	srv := &Server{cfg: &config.Config{VaultDir: t.TempDir()}}
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodOptions, "/", nil))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if !strings.Contains(rec.Header().Get("Allow"), "MKCOL") {
+		t.Fatalf("Allow = %q, want MKCOL", rec.Header().Get("Allow"))
 	}
 }
 
