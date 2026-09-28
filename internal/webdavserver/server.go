@@ -19,8 +19,6 @@ import (
 	"inkflow/internal/plan"
 )
 
-// maxInterceptedBody caps the size of an intercepted, imported-and-teed PUT
-// body held in memory at once.
 const maxInterceptedBody = 512 << 20
 
 type Server struct {
@@ -39,7 +37,7 @@ func Serve(ctx context.Context, cfg *config.Config, imp *importer.Importer, logg
 	}
 	srv := &Server{cfg: cfg, imp: imp, logger: logger}
 	if cfg.Upstream.URL != "" {
-		up, err := newUpstream(cfg.Upstream)
+		up, err := newUpstream(cfg.Upstream, logger)
 		if err != nil {
 			return err
 		}
@@ -88,10 +86,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// serveUpstream handles a request once [upstream] is configured: a PUT that
-// matches a route is imported locally and then teed to upstream at
-// prefix+clean; everything else (including an unmatched PUT) is
-// reverse-proxied to prefix+clean untouched.
 func (s *Server) serveUpstream(w http.ResponseWriter, r *http.Request, clean string) {
 	if r.Method == http.MethodPut {
 		if match, err := plan.Select(s.cfg.Routes, clean); err == nil && match.Matched {
@@ -125,9 +119,14 @@ func (s *Server) handleInterceptedPut(w http.ResponseWriter, r *http.Request, cl
 	s.info("webdav imported", "path", clean, "note", rec.VaultNotePath, "pdf", rec.VaultPDFPath)
 
 	upstreamPath := s.up.uploadPath(clean)
-	if err := s.up.putWithRetry(r.Context(), upstreamPath, data, r.Header.Get("Content-Type")); err != nil {
+	status, err := s.up.putWithRetry(r.Context(), upstreamPath, data, r.Header)
+	if err != nil {
 		s.error("upstream put failed", "path", upstreamPath, "err", err)
 		http.Error(w, "upstream put failed", http.StatusBadGateway)
+		return
+	}
+	if status == http.StatusNoContent {
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	w.WriteHeader(http.StatusCreated)

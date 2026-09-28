@@ -116,8 +116,6 @@
       api_key_file = "/run/credentials/inkflow.service/gemini-key";
     });
 
-  # Same LoadCredential trick as gemini.apiKeyFile above, under its own
-  # credential name so both can be set at once.
   upstreamSettings = mkConfig ({
       url = cfg.upstream.url;
       prefix = cfg.upstream.prefix;
@@ -244,6 +242,13 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = cfg.upstream.url == "" || (cfg.upstream.user != "" && cfg.upstream.passwordFile != null);
+        message = "services.inkflow.upstream.user and .passwordFile are required when .upstream.url is set";
+      }
+    ];
+
     users.users.${cfg.user} = lib.mkIf (cfg.user == "inkflow") {
       isSystemUser = true;
       group = cfg.group;

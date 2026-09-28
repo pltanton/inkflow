@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -17,28 +18,24 @@ import (
 	"inkflow/internal/config"
 )
 
-// maxRewriteBody caps how much of a proxied response body upstream holds in
-// memory to rewrite hrefs in; larger bodies are streamed through untouched.
 const maxRewriteBody = 32 << 20
 
-// upstream proxies non-intercepted requests to a real WebDAV server and PUTs
-// intercepted uploads there too, after inkflow has imported them locally.
-//
-// prefix is the upstream path that inkflow's own root maps to: a request for
-// inkflow path P is served from upstream path prefix+P, and upstream
-// response hrefs/Location/Destination under prefix are rewritten back to P
-// so the BOOX (talking only to inkflow's origin) never sees it.
+// forwardedPutHeaders: lock tokens and Nextcloud's client-supplied mtime/checksum.
+var forwardedPutHeaders = []string{"If", "X-OC-Mtime", "OC-Checksum"}
+
 type upstream struct {
-	base   *url.URL
-	origin string
-	prefix string
-	user   string
-	pass   string
-	client *http.Client
-	proxy  *httputil.ReverseProxy
+	base          *url.URL
+	origin        string
+	prefix        string
+	prefixEscaped string
+	user          string
+	pass          string
+	client        *http.Client
+	proxy         *httputil.ReverseProxy
+	logger        *slog.Logger
 }
 
-func newUpstream(cfg config.UpstreamConfig) (*upstream, error) {
+func newUpstream(cfg config.UpstreamConfig, logger *slog.Logger) (*upstream, error) {
 	base, err := url.Parse(cfg.URL)
 	if err != nil {
 		return nil, fmt.Errorf("upstream.url %q: %w", cfg.URL, err)
@@ -47,20 +44,27 @@ func newUpstream(cfg config.UpstreamConfig) (*upstream, error) {
 		return nil, fmt.Errorf("upstream.url %q: must be an absolute URL", cfg.URL)
 	}
 	u := &upstream{
-		base:   base,
-		origin: base.Scheme + "://" + base.Host,
-		prefix: cfg.Prefix,
-		user:   cfg.User,
-		pass:   cfg.Password,
-		client: &http.Client{Timeout: 60 * time.Second},
+		base:          base,
+		origin:        base.Scheme + "://" + base.Host,
+		prefix:        cfg.Prefix,
+		prefixEscaped: (&url.URL{Path: cfg.Prefix}).EscapedPath(),
+		user:          cfg.User,
+		pass:          cfg.Password,
+		client:        &http.Client{Timeout: 60 * time.Second},
+		logger:        logger,
 	}
 	u.proxy = &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
-			pr.Out.URL.Scheme = base.Scheme
-			pr.Out.URL.Host = base.Host
-			pr.Out.URL.Path = u.prefix + pr.In.URL.Path
-			pr.Out.URL.RawPath = ""
+			clean := cleanPath(pr.In.URL.Path)
+			reqPath := "/" + clean
+			if clean != "" && strings.HasSuffix(pr.In.URL.Path, "/") {
+				reqPath += "/"
+			}
+			target := u.targetURL(u.prefix + reqPath)
+			target.RawQuery = pr.In.URL.RawQuery
+			pr.Out.URL = target
 			pr.Out.Host = base.Host
+			pr.Out.Header.Del("Accept-Encoding")
 			pr.Out.SetBasicAuth(u.user, u.pass)
 			if dest := pr.In.Header.Get("Destination"); dest != "" {
 				if rewritten, err := u.rewriteLocationLike(dest); err == nil {
@@ -73,27 +77,28 @@ func newUpstream(cfg config.UpstreamConfig) (*upstream, error) {
 	return u, nil
 }
 
-// rewriteLocationLike rewrites an absolute inkflow-origin URL "origin+P" (as
-// sent in a Destination request header) into "upstream-origin+prefix+P".
+// targetURL builds the upstream URL for the decoded, prefixed path p,
+// keeping RawPath empty so Go re-escapes it (avoids mis-parsing '#'/'?'/'%').
+func (u *upstream) targetURL(p string) *url.URL {
+	out := *u.base
+	out.Path = strings.TrimSuffix(u.base.Path, "/") + p
+	out.RawPath = ""
+	out.RawQuery = ""
+	return &out
+}
+
 func (u *upstream) rewriteLocationLike(raw string) (string, error) {
 	parsed, err := url.Parse(raw)
 	if err != nil {
 		return "", err
 	}
-	parsed.Scheme = u.base.Scheme
-	parsed.Host = u.base.Host
-	parsed.Path = u.prefix + parsed.Path
-	parsed.RawPath = ""
-	return parsed.String(), nil
+	target := u.targetURL(u.prefix + parsed.Path)
+	target.RawQuery = parsed.RawQuery
+	return target.String(), nil
 }
 
-// hrefValueRe matches the text content of a WebDAV href/Location-ish element
-// regardless of its XML namespace prefix (D:href, d:href, or bare href).
 var hrefValueRe = regexp.MustCompile(`(?is)(<[A-Za-z0-9_]*:?href[^>]*>)(.*?)(</[A-Za-z0-9_]*:?href>)`)
 
-// rewriteResponse strips the upstream prefix (and upstream origin, if
-// present) from the Location header and from every href in an XML body, so
-// the BOOX sees paths relative to inkflow's own root.
 func (u *upstream) rewriteResponse(resp *http.Response) error {
 	if u.prefix == "" {
 		return nil
@@ -102,6 +107,12 @@ func (u *upstream) rewriteResponse(resp *http.Response) error {
 		if rewritten, changed := u.stripPrefixFromValue(loc); changed {
 			resp.Header.Set("Location", rewritten)
 		}
+	}
+	if resp.StatusCode != http.StatusMultiStatus || resp.Request.Method == http.MethodHead {
+		return nil
+	}
+	if resp.Header.Get("Content-Encoding") != "" {
+		return nil
 	}
 	if !strings.Contains(resp.Header.Get("Content-Type"), "xml") {
 		return nil
@@ -113,8 +124,7 @@ func (u *upstream) rewriteResponse(resp *http.Response) error {
 		return err
 	}
 	if len(body) > maxRewriteBody {
-		// Too large to safely buffer and rewrite: pass the bytes already
-		// read plus whatever remains through untouched.
+		u.warn("207 body exceeds rewrite cap, passing through unrewritten", "cap", maxRewriteBody)
 		resp.Body = io.NopCloser(io.MultiReader(bytes.NewReader(body), resp.Body))
 		return nil
 	}
@@ -140,68 +150,108 @@ func (u *upstream) rewriteResponse(resp *http.Response) error {
 	return nil
 }
 
-// stripPrefixFromValue strips prefix (optionally preceded by the upstream
-// origin) from an href/Location value, reporting whether it matched.
 func (u *upstream) stripPrefixFromValue(v string) (string, bool) {
-	candidate := v
-	if strings.HasPrefix(candidate, u.origin) {
-		withoutOrigin := strings.TrimPrefix(candidate, u.origin)
-		if strings.HasPrefix(withoutOrigin, u.prefix) {
-			candidate = withoutOrigin
+	if withoutOrigin := strings.TrimPrefix(v, u.origin); withoutOrigin != v {
+		if rest, ok := u.trimPrefixBoundary(withoutOrigin); ok {
+			return orRoot(rest), true
 		}
 	}
-	if !strings.HasPrefix(candidate, u.prefix) {
-		return v, false
+	if rest, ok := u.trimPrefixBoundary(v); ok {
+		return orRoot(rest), true
 	}
-	rest := strings.TrimPrefix(candidate, u.prefix)
-	if rest == "" {
-		rest = "/"
-	}
-	return rest, true
+	return v, false
 }
 
-// uploadPath is the upstream path for an intercepted PUT at inkflow path
-// clean (a cleanPath result, no leading slash).
+func orRoot(rest string) string {
+	if rest == "" {
+		return "/"
+	}
+	return rest
+}
+
+// Compares against both prefix forms (servers may or may not escape chars
+// like " ") and normalizes %xx case, since servers disagree on hex case.
+func (u *upstream) trimPrefixBoundary(candidate string) (string, bool) {
+	for _, p := range []string{u.prefix, u.prefixEscaped} {
+		if p == "" || len(candidate) < len(p) {
+			continue
+		}
+		if normalizePercentHex(candidate[:len(p)]) != normalizePercentHex(p) {
+			continue
+		}
+		rest := candidate[len(p):]
+		if rest == "" || rest[0] == '/' {
+			return rest, true
+		}
+	}
+	return "", false
+}
+
+func normalizePercentHex(s string) string {
+	b := []byte(s)
+	for i := 0; i+2 < len(b); i++ {
+		if b[i] == '%' && isHex(b[i+1]) && isHex(b[i+2]) {
+			b[i+1] = upperHex(b[i+1])
+			b[i+2] = upperHex(b[i+2])
+		}
+	}
+	return string(b)
+}
+
+func isHex(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+
+func upperHex(c byte) byte {
+	if c >= 'a' && c <= 'f' {
+		return c - 'a' + 'A'
+	}
+	return c
+}
+
 func (u *upstream) uploadPath(clean string) string {
 	return u.prefix + "/" + clean
 }
 
-// putWithRetry PUTs data to path. On a 409 Conflict it MKCOLs every missing
-// parent collection under the configured prefix and retries once.
-func (u *upstream) putWithRetry(ctx context.Context, path string, data []byte, contentType string) error {
-	status, err := u.put(ctx, path, data, contentType)
+func (u *upstream) putWithRetry(ctx context.Context, path string, data []byte, header http.Header) (int, error) {
+	status, err := u.put(ctx, path, data, header)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if status == http.StatusConflict {
 		for _, dir := range parentCollections(u.prefix, path) {
 			_, _ = u.mkcol(ctx, dir)
 		}
-		status, err = u.put(ctx, path, data, contentType)
+		status, err = u.put(ctx, path, data, header)
 		if err != nil {
-			return err
+			return 0, err
 		}
 	}
 	if status < 200 || status >= 300 {
-		return fmt.Errorf("upstream put %s: status %d", path, status)
+		return 0, fmt.Errorf("upstream put %s: status %d", path, status)
 	}
-	return nil
+	return status, nil
 }
 
-func (u *upstream) put(ctx context.Context, path string, data []byte, contentType string) (int, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, u.base.String()+path, bytes.NewReader(data))
+func (u *upstream) put(ctx context.Context, path string, data []byte, header http.Header) (int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, u.targetURL(path).String(), bytes.NewReader(data))
 	if err != nil {
 		return 0, err
 	}
 	req.SetBasicAuth(u.user, u.pass)
-	if contentType != "" {
-		req.Header.Set("Content-Type", contentType)
+	if ct := header.Get("Content-Type"); ct != "" {
+		req.Header.Set("Content-Type", ct)
+	}
+	for _, h := range forwardedPutHeaders {
+		if v := header.Get(h); v != "" {
+			req.Header.Set(h, v)
+		}
 	}
 	return u.do(req)
 }
 
 func (u *upstream) mkcol(ctx context.Context, path string) (int, error) {
-	req, err := http.NewRequestWithContext(ctx, "MKCOL", u.base.String()+path, nil)
+	req, err := http.NewRequestWithContext(ctx, "MKCOL", u.targetURL(path).String(), nil)
 	if err != nil {
 		return 0, err
 	}
@@ -219,9 +269,12 @@ func (u *upstream) do(req *http.Request) (int, error) {
 	return resp.StatusCode, nil
 }
 
-// parentCollections lists the ancestor collections of fullPath, from
-// shallowest to deepest, up to (but not including) fullPath itself, and
-// stopping at prefix — the caller assumes prefix itself already exists.
+func (u *upstream) warn(msg string, args ...any) {
+	if u != nil && u.logger != nil {
+		u.logger.Warn(msg, args...)
+	}
+}
+
 func parentCollections(prefix, fullPath string) []string {
 	dir := path.Dir(fullPath)
 	rel := strings.TrimPrefix(dir, prefix)

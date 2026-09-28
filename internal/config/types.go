@@ -18,15 +18,12 @@ type Config struct {
 	Routes   []Route        `toml:"route" json:"route"`
 }
 
-// UpstreamConfig points inkflow at a real WebDAV server (e.g. Nextcloud) that
-// it proxies everything to except PUTs matching a route, which it also imports.
 type UpstreamConfig struct {
 	URL          string `toml:"url" json:"url"`
 	Prefix       string `toml:"prefix" json:"prefix"`
 	User         string `toml:"user" json:"user"`
 	PasswordFile string `toml:"password_file" json:"password_file"`
 
-	// Password is the secret read from PasswordFile by main at startup; not a TOML field.
 	Password string `toml:"-" json:"-"`
 }
 

@@ -2,12 +2,16 @@ package webdavserver
 
 import (
 	"bytes"
+	"compress/gzip"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -17,8 +21,6 @@ import (
 	"inkflow/internal/state"
 )
 
-// recordedRequest captures everything a test needs to assert about a request
-// the fake upstream received.
 type recordedRequest struct {
 	Method string
 	Path   string
@@ -26,13 +28,12 @@ type recordedRequest struct {
 	Body   []byte
 }
 
-// fakeUpstream is a httptest WebDAV stand-in that records every request and
-// lets a test script canned responses per path/method.
 type fakeUpstream struct {
 	mu       sync.Mutex
 	requests []recordedRequest
-	// respond, if set, overrides the default 201-with-empty-body response.
-	respond func(rec recordedRequest) (status int, contentType, body string)
+	respond  func(rec recordedRequest) (status int, contentType, body string)
+	// gzipIfAccepted mimics a Caddy `encode gzip` directive; opt-in per test.
+	gzipIfAccepted bool
 }
 
 func newFakeUpstream(t *testing.T) (*httptest.Server, *fakeUpstream) {
@@ -52,8 +53,20 @@ func newFakeUpstream(t *testing.T) (*httptest.Server, *fakeUpstream) {
 		if contentType != "" {
 			w.Header().Set("Content-Type", contentType)
 		}
+		payload := []byte(respBody)
+		if fu.gzipIfAccepted && strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			var buf bytes.Buffer
+			gz := gzip.NewWriter(&buf)
+			_, _ = gz.Write(payload)
+			_ = gz.Close()
+			payload = buf.Bytes()
+			w.Header().Set("Content-Encoding", "gzip")
+		}
+		w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
 		w.WriteHeader(status)
-		_, _ = w.Write([]byte(respBody))
+		if r.Method != http.MethodHead {
+			_, _ = w.Write(payload)
+		}
 	}))
 	t.Cleanup(ts.Close)
 	return ts, fu
@@ -69,14 +82,21 @@ func (f *fakeUpstream) all() []recordedRequest {
 
 const testPrefix = "/remote.php/dav/files/anton"
 
+var testLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
+
 func newTestUpstream(t *testing.T, tsURL, prefix string) *upstream {
+	t.Helper()
+	return newTestUpstreamWithLogger(t, tsURL, prefix, testLogger)
+}
+
+func newTestUpstreamWithLogger(t *testing.T, tsURL, prefix string, logger *slog.Logger) *upstream {
 	t.Helper()
 	up, err := newUpstream(config.UpstreamConfig{
 		URL:      tsURL,
 		Prefix:   prefix,
 		User:     "anton",
 		Password: "secret",
-	})
+	}, logger)
 	if err != nil {
 		t.Fatalf("newUpstream: %v", err)
 	}
@@ -210,9 +230,7 @@ func TestInterceptedPutUpstream5xxReturns502(t *testing.T) {
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502", rec.Code)
 	}
-	// The local import must have happened despite the upstream failure —
-	// that's what makes a BOOX retry of the same bytes safe (dedup skips
-	// the importer on the retry and only the upstream PUT is attempted again).
+	// Import must have happened despite the upstream failure — makes a BOOX retry safe (importer dedups by hash+destination).
 	if _, err := os.Stat(filepath.Join(srv.cfg.VaultDir, "notes", "2026-05-06 note.md")); err != nil {
 		t.Fatalf("note not imported despite upstream failure: %v", err)
 	}
@@ -269,9 +287,6 @@ func TestGetIsProxiedToUpstreamPrefixPath(t *testing.T) {
 	}
 }
 
-// nextcloudMultistatus builds a Nextcloud-flavoured PROPFIND response: one
-// self-referencing entry as an absolute path, one child as an absolute URL
-// with a percent-encoded (Cyrillic) filename — both under the test prefix.
 func nextcloudMultistatus(selfHref, childHref string) string {
 	return fmt.Sprintf(`<?xml version="1.0"?>
 <d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
@@ -393,5 +408,257 @@ func TestUpstreamNeverHitOnBadInkflowAuth(t *testing.T) {
 	}
 	if len(fu.all()) != 0 {
 		t.Fatalf("upstream must not be hit on bad inkflow auth, got %d requests", len(fu.all()))
+	}
+}
+
+func TestPropfindDecompressesGzipBeforeRewritingHrefs(t *testing.T) {
+	ts, fu := newFakeUpstream(t)
+	fu.gzipIfAccepted = true
+	up := newTestUpstream(t, ts.URL, testPrefix)
+	srv := newTestServer(t, up, nil)
+	fu.respond = func(rec recordedRequest) (int, string, string) {
+		return http.StatusMultiStatus, "application/xml; charset=utf-8",
+			nextcloudMultistatus(testPrefix+"/", testPrefix+"/Books/")
+	}
+
+	req := httptest.NewRequest("PROPFIND", "/", nil)
+	req.Header.Set("Depth", "1")
+	req.Header.Set("Accept-Encoding", "gzip") // what OkHttp/BOOX sends
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMultiStatus {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Content-Encoding") != "" {
+		t.Errorf("Content-Encoding leaked to client: %q", rec.Header().Get("Content-Encoding"))
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "<d:href>/</d:href>") || !strings.Contains(body, "<d:href>/Books/</d:href>") {
+		t.Fatalf("hrefs not rewritten after gzip round-trip: %s", body)
+	}
+}
+
+func TestRewriteResponseSkipsBodyWhenContentEncodingPresent(t *testing.T) {
+	up := newTestUpstream(t, "http://upstream.invalid", testPrefix)
+	const original = `<d:multistatus xmlns:d="DAV:"><d:response><d:href>` + testPrefix + `/Books/</d:href></d:response></d:multistatus>`
+	req := httptest.NewRequest("PROPFIND", "/Books/", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusMultiStatus,
+		Request:    req,
+		Header: http.Header{
+			"Content-Type":     {"application/xml"},
+			"Content-Encoding": {"br"},
+		},
+		Body: io.NopCloser(strings.NewReader(original)),
+	}
+	if err := up.proxy.ModifyResponse(resp); err != nil {
+		t.Fatalf("ModifyResponse: %v", err)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	if string(got) != original {
+		t.Errorf("body changed despite Content-Encoding: got %q, want %q", got, original)
+	}
+}
+
+func TestInterceptedPutHandlesSpecialCharactersInFilename(t *testing.T) {
+	names := []string{
+		"note #1.pdf",
+		"what?.pdf",
+		"100%.pdf",
+		"Книга.pdf",
+	}
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			ts, fu := newFakeUpstream(t)
+			up := newTestUpstream(t, ts.URL, testPrefix)
+			srv := newTestServer(t, up, []config.Route{{From: "onyx/Syncs/", Template: "meeting"}})
+
+			target := "/onyx/Syncs/" + url.PathEscape(name)
+			req := httptest.NewRequest(http.MethodPut, target, bytes.NewReader([]byte("pdf-bytes")))
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusCreated {
+				t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+			}
+			reqs := fu.all()
+			if len(reqs) != 1 {
+				t.Fatalf("expected one upstream request, got %d", len(reqs))
+			}
+			want := testPrefix + "/onyx/Syncs/" + name
+			if reqs[0].Path != want {
+				t.Errorf("upstream path = %q, want %q", reqs[0].Path, want)
+			}
+		})
+	}
+}
+
+func TestUpstreamURLWithTrailingSlashDoesNotDoubleSlash(t *testing.T) {
+	ts, fu := newFakeUpstream(t)
+	up := newTestUpstream(t, ts.URL+"/", testPrefix)
+	srv := newTestServer(t, up, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/Books/x.epub", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	reqs := fu.all()
+	if len(reqs) != 1 {
+		t.Fatalf("expected one proxied request, got %d", len(reqs))
+	}
+	if strings.Contains(reqs[0].Path, "//") {
+		t.Errorf("double slash in upstream path: %q", reqs[0].Path)
+	}
+	want := testPrefix + "/Books/x.epub"
+	if reqs[0].Path != want {
+		t.Errorf("path = %q, want %q", reqs[0].Path, want)
+	}
+}
+
+func TestNonMultistatusXMLPassesThroughUntouched(t *testing.T) {
+	ts, fu := newFakeUpstream(t)
+	up := newTestUpstream(t, ts.URL, testPrefix)
+	srv := newTestServer(t, up, nil)
+	const fb2Body = `<?xml version="1.0"?><FictionBook><href>should not be touched</href></FictionBook>`
+	fu.respond = func(rec recordedRequest) (int, string, string) {
+		return http.StatusOK, "application/x-fictionbook+xml", fb2Body
+	}
+
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		req := httptest.NewRequest(method, "/Books/book.fb2", nil)
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d", method, rec.Code)
+		}
+		if method == http.MethodGet && rec.Body.String() != fb2Body {
+			t.Errorf("%s: body mangled: %q", method, rec.Body.String())
+		}
+		wantLen := strconv.Itoa(len(fb2Body))
+		if got := rec.Header().Get("Content-Length"); got != wantLen {
+			t.Errorf("%s: Content-Length = %q, want %q", method, got, wantLen)
+		}
+	}
+	_ = fu
+}
+
+func TestInterceptedPutForwardsConditionalAndNextcloudHeaders(t *testing.T) {
+	ts, fu := newFakeUpstream(t)
+	up := newTestUpstream(t, ts.URL, testPrefix)
+	srv := newTestServer(t, up, []config.Route{{From: "onyx/Syncs/", Template: "meeting"}})
+
+	req := httptest.NewRequest(http.MethodPut, "/onyx/Syncs/2026-05-06%20note.pdf", bytes.NewReader([]byte("pdf-bytes")))
+	req.Header.Set("If", `(<opaquelocktoken:abc>)`)
+	req.Header.Set("X-OC-Mtime", "1700000000")
+	req.Header.Set("OC-Checksum", "SHA1:deadbeef")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	reqs := fu.all()
+	if len(reqs) != 1 {
+		t.Fatalf("expected one upstream request, got %d", len(reqs))
+	}
+	got := reqs[0].Header
+	if got.Get("If") != `(<opaquelocktoken:abc>)` {
+		t.Errorf("If header not forwarded: %q", got.Get("If"))
+	}
+	if got.Get("X-OC-Mtime") != "1700000000" {
+		t.Errorf("X-OC-Mtime not forwarded: %q", got.Get("X-OC-Mtime"))
+	}
+	if got.Get("OC-Checksum") != "SHA1:deadbeef" {
+		t.Errorf("OC-Checksum not forwarded: %q", got.Get("OC-Checksum"))
+	}
+}
+
+func TestInterceptedPutPassesThrough204FromUpstream(t *testing.T) {
+	ts, fu := newFakeUpstream(t)
+	up := newTestUpstream(t, ts.URL, testPrefix)
+	srv := newTestServer(t, up, []config.Route{{From: "onyx/Syncs/", Template: "meeting"}})
+	fu.respond = func(rec recordedRequest) (int, string, string) {
+		return http.StatusNoContent, "", ""
+	}
+
+	req := httptest.NewRequest(http.MethodPut, "/onyx/Syncs/2026-05-06%20note.pdf", bytes.NewReader([]byte("pdf-bytes")))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
+	}
+}
+
+func TestStripPrefixFromValue(t *testing.T) {
+	up := newTestUpstream(t, "http://upstream.invalid", testPrefix)
+
+	sibling := testPrefix + "ina/x" // "/remote.php/dav/files/antonina/x" — a different user, not a subpath
+	if got, changed := up.stripPrefixFromValue(sibling); changed {
+		t.Errorf("sibling path %q was rewritten to %q, want untouched", sibling, got)
+	}
+
+	// '@' is a valid unescaped path character (RFC 3986 pchar), so a
+	// Nextcloud email-style user id normally appears unescaped in hrefs too.
+	up2 := newTestUpstream(t, "http://upstream.invalid", testPrefix+"@example.com")
+	if got, changed := up2.stripPrefixFromValue(testPrefix + "@example.com/Books/"); !changed || got != "/Books/" {
+		t.Errorf("literal '@' in prefix: got %q, changed=%v", got, changed)
+	}
+
+	up3 := newTestUpstream(t, "http://upstream.invalid", testPrefix+" home")
+	if got, changed := up3.stripPrefixFromValue(testPrefix + "%20home/Books/"); !changed || got != "/Books/" {
+		t.Errorf("percent-encoded space in prefix: got %q, changed=%v", got, changed)
+	}
+
+	// Same byte, different hex case (some servers emit lowercase percent-hex).
+	up4 := newTestUpstream(t, "http://upstream.invalid", testPrefix+"ы")
+	if got, changed := up4.stripPrefixFromValue(testPrefix + "%d1%8b/Books/"); !changed || got != "/Books/" {
+		t.Errorf("lowercase percent-hex prefix match: got %q, changed=%v", got, changed)
+	}
+}
+
+func TestProxyPathCannotClimbAbovePrefix(t *testing.T) {
+	ts, fu := newFakeUpstream(t)
+	up := newTestUpstream(t, ts.URL, testPrefix)
+	srv := newTestServer(t, up, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/../../../secret", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	reqs := fu.all()
+	if len(reqs) != 1 {
+		t.Fatalf("expected one proxied request, got %d", len(reqs))
+	}
+	if !strings.HasPrefix(reqs[0].Path, testPrefix) {
+		t.Errorf("traversal escaped the prefix: upstream path = %q", reqs[0].Path)
+	}
+}
+
+func TestOversizedMultistatusBodyPassesThroughWithWarning(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+	ts, fu := newFakeUpstream(t)
+	up := newTestUpstreamWithLogger(t, ts.URL, testPrefix, logger)
+	srv := newTestServer(t, up, nil)
+
+	oversized := strings.Repeat("a", maxRewriteBody+1024)
+	fu.respond = func(rec recordedRequest) (int, string, string) {
+		return http.StatusMultiStatus, "application/xml; charset=utf-8", oversized
+	}
+
+	req := httptest.NewRequest("PROPFIND", "/", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMultiStatus {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if rec.Body.Len() != len(oversized) {
+		t.Errorf("body length = %d, want %d (passthrough)", rec.Body.Len(), len(oversized))
+	}
+	if !strings.Contains(logBuf.String(), "cap") {
+		t.Errorf("expected a warning log mentioning the size cap, got: %s", logBuf.String())
 	}
 }
