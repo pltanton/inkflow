@@ -89,6 +89,19 @@ A request for inkflow path `P` is served from upstream path `prefix + P`. A `PUT
 
 `password_file` is read once at startup, like `gemini.api_key_file`.
 
+The BOOX keeps pointing at inkflow's root URL with inkflow's own `webdav_user`/`webdav_pass`; switching `[upstream]` on needs no change on the device. Its cloud view then shows the upstream folders, and routed note exports keep landing in the vault — plus a copy upstream.
+
+On NixOS:
+
+```nix
+services.inkflow.upstream = {
+  url = "https://nextcloud.example";
+  prefix = "/remote.php/dav/files/anton";
+  user = "anton";
+  passwordFile = "/run/secrets/nextcloud-app-password"; # a Nextcloud app password
+};
+```
+
 ## Run
 
 ```bash
