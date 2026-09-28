@@ -1,40 +1,102 @@
-{config, lib, pkgs, ...}:
-let
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}: let
   cfg = config.services.inkflow;
   toml = pkgs.formats.toml {};
 
   routeType = lib.types.submodule {
     options = {
       from = lib.mkOption {type = lib.types.str;};
-      pdf_dir = lib.mkOption {type = lib.types.str; default = "";};
-      note_dir = lib.mkOption {type = lib.types.str; default = "";};
-      note_name = lib.mkOption {type = lib.types.str; default = "";};
-      pdf_name = lib.mkOption {type = lib.types.str; default = "";};
-      template = lib.mkOption {type = lib.types.str; default = "";};
-      ai = lib.mkOption {type = lib.types.bool; default = false;};
+      pdf_dir = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+      };
+      note_dir = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+      };
+      note_name = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+      };
+      pdf_name = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+      };
+      template = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+      };
+      ai = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+      };
     };
   };
 
   geminiType = lib.types.submodule {
     options = {
-      apiKeyFile    = lib.mkOption { type = lib.types.nullOr lib.types.path; default = null; };
-      model         = lib.mkOption { type = lib.types.str; default = "gemini-3.5-flash"; };
-      timeout       = lib.mkOption { type = lib.types.str; default = "60s"; };
-      ocrPrompt     = lib.mkOption { type = lib.types.str; default = "Transcribe the handwritten page as clean readable Markdown. The goal is a document that reads well, not a pixel-accurate copy of paper layout. Join visually wrapped lines that belong to one sentence into a single flowing line. Do not preserve every line break from the paper. When the writer puts a single name or short phrase above a related cluster of items, render that header as a Markdown heading: `### Name`. Render dash, bullet, or arrow markers on the page as `-` list items. Use a blank line only between structural sections, not after every visual line wrap. Preserve visual markup: wrap text highlighted with a marker pen in `==text==`; wrap text inside a hand-drawn frame or box in `**text**` as a single bold span even if it wrapped across multiple lines; render hand-drawn checkboxes as `- [ ]` (empty) or `- [x]` (ticked). Keep the source language. Faithful transcription only — no translation, no summarization."; };
-      summaryPrompt = lib.mkOption { type = lib.types.str; default = "Summarize as 3-5 short bullets covering action items, decisions, deadlines, people. Use the source language. Plain bullets only — do not produce `[ ]` or `[x]` checkboxes. The reader maintains a separate TODO section elsewhere in the note."; };
+      apiKeyFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+      };
+      model = lib.mkOption {
+        type = lib.types.str;
+        default = "gemini-3.5-flash";
+      };
+      timeout = lib.mkOption {
+        type = lib.types.str;
+        default = "60s";
+      };
+      ocrPrompt = lib.mkOption {
+        type = lib.types.str;
+        default = "Transcribe the handwritten page as clean readable Markdown. The goal is a document that reads well, not a pixel-accurate copy of paper layout. Join visually wrapped lines that belong to one sentence into a single flowing line. Do not preserve every line break from the paper. When the writer puts a single name or short phrase above a related cluster of items, render that header as a Markdown heading: `### Name`. Render dash, bullet, or arrow markers on the page as `-` list items. Use a blank line only between structural sections, not after every visual line wrap. Preserve visual markup: wrap text highlighted with a marker pen in `==text==`; wrap text inside a hand-drawn frame or box in `**text**` as a single bold span even if it wrapped across multiple lines; render hand-drawn checkboxes as `- [ ]` (empty) or `- [x]` (ticked). Keep the source language. Faithful transcription only — no translation, no summarization.";
+      };
+      summaryPrompt = lib.mkOption {
+        type = lib.types.str;
+        default = "Summarize as 3-5 short bullets covering action items, decisions, deadlines, people. Use the source language. Plain bullets only — do not produce `[ ]` or `[x]` checkboxes. The reader maintains a separate TODO section elsewhere in the note.";
+      };
+    };
+  };
+
+  upstreamType = lib.types.submodule {
+    options = {
+      url = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        description = "Real WebDAV server (e.g. Nextcloud) to proxy to; empty disables the upstream entirely.";
+      };
+      prefix = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        description = "Upstream path that inkflow's own root maps to, e.g. /remote.php/dav/files/anton.";
+      };
+      user = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+      };
+      passwordFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+      };
     };
   };
 
   mkRoute = r:
     lib.filterAttrs (_: v: v != "" && v != null && v != false) {
-      inherit (r)
+      inherit
+        (r)
         from
         pdf_dir
         note_dir
         note_name
         pdf_name
         template
-        ai;
+        ai
+        ;
     };
 
   mkConfig = attrs: lib.filterAttrs (_: v: v != "" && v != null) attrs;
@@ -45,25 +107,42 @@ let
   # would otherwise show up in process listings) and keeps the secret out of
   # /nix/store.
   geminiSettings = mkConfig ({
-    model          = cfg.gemini.model;
-    timeout        = cfg.gemini.timeout;
-    ocr_prompt     = cfg.gemini.ocrPrompt;
-    summary_prompt = cfg.gemini.summaryPrompt;
-  } // lib.optionalAttrs (cfg.gemini.apiKeyFile != null) {
-    api_key_file = "/run/credentials/inkflow.service/gemini-key";
-  });
+      model = cfg.gemini.model;
+      timeout = cfg.gemini.timeout;
+      ocr_prompt = cfg.gemini.ocrPrompt;
+      summary_prompt = cfg.gemini.summaryPrompt;
+    }
+    // lib.optionalAttrs (cfg.gemini.apiKeyFile != null) {
+      api_key_file = "/run/credentials/inkflow.service/gemini-key";
+    });
 
-  baseSettings = mkConfig {
-    listen_addr = cfg.listenAddr;
-    template_dir = cfg.templateDir;
-    webdav_user = cfg.webdavUser;
-    webdav_pass = cfg.webdavPass;
-    vault_dir = cfg.vaultDir;
-    default_pdf_dir = cfg.defaultPdfDir;
-    default_note_dir = cfg.defaultNoteDir;
-    state_file = cfg.stateFile;
-    route = map mkRoute cfg.routes;
-  } // { gemini = geminiSettings; };
+  upstreamSettings = mkConfig ({
+      url = cfg.upstream.url;
+      prefix = cfg.upstream.prefix;
+      user = cfg.upstream.user;
+    }
+    // lib.optionalAttrs (cfg.upstream.passwordFile != null) {
+      password_file = "/run/credentials/inkflow.service/upstream-password";
+    });
+
+  loadCredentials =
+    lib.optional (cfg.gemini.apiKeyFile != null) "gemini-key:${toString cfg.gemini.apiKeyFile}"
+    ++ lib.optional (cfg.upstream.passwordFile != null) "upstream-password:${toString cfg.upstream.passwordFile}";
+
+  baseSettings =
+    mkConfig {
+      listen_addr = cfg.listenAddr;
+      template_dir = cfg.templateDir;
+      webdav_user = cfg.webdavUser;
+      webdav_pass = cfg.webdavPass;
+      vault_dir = cfg.vaultDir;
+      default_pdf_dir = cfg.defaultPdfDir;
+      default_note_dir = cfg.defaultNoteDir;
+      state_file = cfg.stateFile;
+      route = map mkRoute cfg.routes;
+    }
+    // {gemini = geminiSettings;}
+    // lib.optionalAttrs (cfg.upstream.url != "") {upstream = upstreamSettings;};
 
   configFile = toml.generate "inkflow.toml" (baseSettings // cfg.extraSettings);
 in {
@@ -143,6 +222,12 @@ in {
       description = "Gemini OCR+summary settings";
     };
 
+    upstream = lib.mkOption {
+      type = upstreamType;
+      default = {};
+      description = "Optional real WebDAV server (e.g. Nextcloud) to proxy everything to besides matched-route uploads";
+    };
+
     extraSettings = lib.mkOption {
       type = lib.types.attrs;
       default = {};
@@ -157,6 +242,13 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = cfg.upstream.url == "" || (cfg.upstream.user != "" && cfg.upstream.passwordFile != null);
+        message = "services.inkflow.upstream.user and .passwordFile are required when .upstream.url is set";
+      }
+    ];
+
     users.users.${cfg.user} = lib.mkIf (cfg.user == "inkflow") {
       isSystemUser = true;
       group = cfg.group;
@@ -173,19 +265,21 @@ in {
       description = "Inkflow service";
       wantedBy = ["multi-user.target"];
 
-      serviceConfig = {
-        ExecStart = "${cfg.package}/bin/inkflow --config ${configFile} serve";
-        User = cfg.user;
-        Group = cfg.group;
-        WorkingDirectory = cfg.stateDir;
-        EnvironmentFile = cfg.environmentFiles;
-        UMask = "0002";
-        Restart = "always";
-        RestartSec = "5s";
-        NoNewPrivileges = true;
-      } // lib.optionalAttrs (cfg.gemini.apiKeyFile != null) {
-        LoadCredential = [ "gemini-key:${toString cfg.gemini.apiKeyFile}" ];
-      };
+      serviceConfig =
+        {
+          ExecStart = "${cfg.package}/bin/inkflow --config ${configFile} serve";
+          User = cfg.user;
+          Group = cfg.group;
+          WorkingDirectory = cfg.stateDir;
+          EnvironmentFile = cfg.environmentFiles;
+          UMask = "0002";
+          Restart = "always";
+          RestartSec = "5s";
+          NoNewPrivileges = true;
+        }
+        // lib.optionalAttrs (loadCredentials != []) {
+          LoadCredential = loadCredentials;
+        };
     };
   };
 }

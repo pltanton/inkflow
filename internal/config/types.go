@@ -13,8 +13,18 @@ type Config struct {
 	DefaultNoteDir string `toml:"default_note_dir" json:"default_note_dir"`
 	StateFile      string `toml:"state_file" json:"state_file"`
 
-	Gemini GeminiConfig `toml:"gemini" json:"gemini"`
-	Routes []Route      `toml:"route" json:"route"`
+	Gemini   GeminiConfig   `toml:"gemini" json:"gemini"`
+	Upstream UpstreamConfig `toml:"upstream" json:"upstream"`
+	Routes   []Route        `toml:"route" json:"route"`
+}
+
+type UpstreamConfig struct {
+	URL          string `toml:"url" json:"url"`
+	Prefix       string `toml:"prefix" json:"prefix"`
+	User         string `toml:"user" json:"user"`
+	PasswordFile string `toml:"password_file" json:"password_file"`
+
+	Password string `toml:"-" json:"-"`
 }
 
 type Route struct {

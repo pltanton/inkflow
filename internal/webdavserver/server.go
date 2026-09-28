@@ -1,8 +1,11 @@
 package webdavserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/xml"
+	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -13,12 +16,16 @@ import (
 
 	"inkflow/internal/config"
 	"inkflow/internal/importer"
+	"inkflow/internal/plan"
 )
+
+const maxInterceptedBody = 512 << 20
 
 type Server struct {
 	cfg    *config.Config
 	imp    *importer.Importer
 	logger *slog.Logger
+	up     *upstream
 }
 
 func Serve(ctx context.Context, cfg *config.Config, imp *importer.Importer, logger *slog.Logger) error {
@@ -29,6 +36,13 @@ func Serve(ctx context.Context, cfg *config.Config, imp *importer.Importer, logg
 		cfg.WebDAVPass = os.Getenv("WEBDAV_PASS")
 	}
 	srv := &Server{cfg: cfg, imp: imp, logger: logger}
+	if cfg.Upstream.URL != "" {
+		up, err := newUpstream(cfg.Upstream, logger)
+		if err != nil {
+			return err
+		}
+		srv.up = up
+	}
 	httpSrv := &http.Server{Addr: cfg.ListenAddr, Handler: srv}
 
 	go func() {
@@ -51,6 +65,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	clean := cleanPath(r.URL.Path)
 	s.info("webdav request", "method", r.Method, "path", clean, "depth", r.Header.Get("Depth"))
+
+	if s.up != nil {
+		s.serveUpstream(w, r, clean)
+		return
+	}
+
 	switch r.Method {
 	case http.MethodOptions:
 		w.Header().Set("Allow", "OPTIONS, PROPFIND, PUT")
@@ -64,6 +84,52 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Allow", "OPTIONS, PROPFIND, PUT")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func (s *Server) serveUpstream(w http.ResponseWriter, r *http.Request, clean string) {
+	if r.Method == http.MethodPut {
+		if match, err := plan.Select(s.cfg.Routes, clean); err == nil && match.Matched {
+			s.handleInterceptedPut(w, r, clean)
+			return
+		}
+	}
+	s.debug("webdav proxied", "method", r.Method, "path", clean)
+	s.up.proxy.ServeHTTP(w, r)
+}
+
+func (s *Server) handleInterceptedPut(w http.ResponseWriter, r *http.Request, clean string) {
+	limited := http.MaxBytesReader(w, r.Body, maxInterceptedBody)
+	data, err := io.ReadAll(limited)
+	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	rec, err := s.imp.Import(r.Context(), clean, bytes.NewReader(data), time.Now().UTC())
+	if err != nil {
+		s.error("webdav import failed", "path", clean, "err", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.info("webdav imported", "path", clean, "note", rec.VaultNotePath, "pdf", rec.VaultPDFPath)
+
+	upstreamPath := s.up.uploadPath(clean)
+	status, err := s.up.putWithRetry(r.Context(), upstreamPath, data, r.Header)
+	if err != nil {
+		s.error("upstream put failed", "path", upstreamPath, "err", err)
+		http.Error(w, "upstream put failed", http.StatusBadGateway)
+		return
+	}
+	if status == http.StatusNoContent {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
 }
 
 func (s *Server) authorize(w http.ResponseWriter, r *http.Request) bool {
@@ -150,6 +216,12 @@ func (s *Server) info(msg string, args ...any) {
 func (s *Server) error(msg string, args ...any) {
 	if s != nil && s.logger != nil {
 		s.logger.Error(msg, args...)
+	}
+}
+
+func (s *Server) debug(msg string, args ...any) {
+	if s != nil && s.logger != nil {
+		s.logger.Debug(msg, args...)
 	}
 }
 

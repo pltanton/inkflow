@@ -233,3 +233,49 @@ from = "Syncs/"
 		t.Fatalf("expected no error for max_retries = 0 with enabled = false, got: %v", err)
 	}
 }
+
+func TestValidateUpstreamRequiresUserAndPasswordFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "inkflow.toml")
+	body := `
+vault_dir = "/tmp/vault"
+
+[upstream]
+url = "https://nextcloud.example"
+
+[[route]]
+from = "Syncs/"
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for upstream.url without user/password_file, got nil")
+	}
+}
+
+func TestLoadNormalizesUpstreamPrefix(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "inkflow.toml")
+	body := `
+vault_dir = "/tmp/vault"
+
+[upstream]
+url = "https://nextcloud.example"
+prefix = "remote.php/dav/files/anton/"
+user = "anton"
+password_file = "/run/secrets/x"
+
+[[route]]
+from = "Syncs/"
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Upstream.Prefix != "/remote.php/dav/files/anton" {
+		t.Errorf("Prefix = %q, want leading slash and no trailing slash", cfg.Upstream.Prefix)
+	}
+}
