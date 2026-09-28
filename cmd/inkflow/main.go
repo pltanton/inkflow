@@ -88,6 +88,13 @@ func loadRuntime(logger *slog.Logger, configPath string) (runtime, error) {
 	if cfg.TemplateDir != "" && !filepath.IsAbs(cfg.TemplateDir) {
 		cfg.TemplateDir = filepath.Join(cfgDir, cfg.TemplateDir)
 	}
+	if cfg.Upstream.URL != "" {
+		pass, err := resolveUpstreamPassword(cfg.Upstream)
+		if err != nil {
+			return runtime{}, err
+		}
+		cfg.Upstream.Password = pass
+	}
 	var aiProvider ai.Provider
 	if anyRouteWantsAI(cfg.Routes) {
 		key, err := resolveAPIKey(cfg.Gemini)
@@ -154,6 +161,18 @@ func resolveAPIKey(cfg config.GeminiConfig) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("gemini: no API key — set $GEMINI_API_KEY or [gemini].api_key_file")
+}
+
+func resolveUpstreamPassword(cfg config.UpstreamConfig) (string, error) {
+	data, err := os.ReadFile(cfg.PasswordFile)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", cfg.PasswordFile, err)
+	}
+	pass := strings.TrimSpace(string(data))
+	if pass == "" {
+		return "", fmt.Errorf("upstream: %s is empty", cfg.PasswordFile)
+	}
+	return pass, nil
 }
 
 func newServeCmd() *cobra.Command {

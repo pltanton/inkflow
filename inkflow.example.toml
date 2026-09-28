@@ -13,6 +13,14 @@ summary_prompt = "Summarize as 3-5 short bullets covering action items, decision
 # max_retries = 3      # maximum number of retry attempts (not counting the initial attempt)
 # backoff = "30s"      # wait time between retry attempts (e.g. "30s", "2m")
 
+# [upstream]
+# Proxies everything to a real WebDAV server (e.g. Nextcloud) so the BOOX's
+# single WebDAV slot can serve both inkflow routes and, say, Nextcloud Books.
+# url = "https://nextcloud.example"
+# prefix = "/remote.php/dav/files/anton"  # upstream path inkflow's own root maps to
+# user = "anton"
+# password_file = "/run/secrets/nextcloud-password"
+
 [[route]]
 from = "Syncs/"
 pdf_dir = "_files/Attachments/Boox/Syncs"

@@ -32,6 +32,7 @@ PDF filename parsing: first 10 chars used as date if YYYY-MM-DD; `[bracket text]
 Example: `2026-05-06 Meeting [finance].pdf` → date `2026-05-06`, title `Meeting`, tags `["finance"]`.
 
 Template lookup order (first match wins):
+
 1. `{template_dir}/{name}.md.tmpl`
 2. `{template_dir}/default.md.tmpl`
 3. Embedded `templates/{name}.md.tmpl`
@@ -43,14 +44,16 @@ No fallback to default on template render error — import fails.
 
 ## Environment Variables
 
-| Var | Purpose |
-|-----|---------|
-| `GEMINI_API_KEY` | API key; takes precedence over `api_key_file`; empty string falls back to file |
-| `WEBDAV_USER` / `WEBDAV_PASS` | Auth fallback if not in config |
-| `XDG_STATE_HOME` | Base for default state file path |
-| `SLOG_LEVEL` | Log level (`debug`, `info`, etc.) |
+| Var                           | Purpose                                                                        |
+| ----------------------------- | ------------------------------------------------------------------------------ |
+| `GEMINI_API_KEY`              | API key; takes precedence over `api_key_file`; empty string falls back to file |
+| `WEBDAV_USER` / `WEBDAV_PASS` | Auth fallback if not in config                                                 |
+| `XDG_STATE_HOME`              | Base for default state file path                                               |
+| `SLOG_LEVEL`                  | Log level (`debug`, `info`, etc.)                                              |
 
 If any route has `ai = true` and no API key is available at startup, server refuses to start.
+
+Optional `[upstream]` (url, prefix, user, password_file) turns inkflow into a gateway in front of a real WebDAV server (e.g. Nextcloud): a `PUT` matching a route is imported as today and also teed to upstream at `prefix + P`; everything else is reverse-proxied to `prefix + P`, with response hrefs/`Location`/`Destination` rewritten back to inkflow-relative paths. `password_file` is read once at startup, like `gemini.api_key_file`; `url` requires `user` and `password_file`. See `internal/webdavserver/upstream.go`.
 
 ---
 

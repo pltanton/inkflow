@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -69,6 +70,14 @@ func applyDefaults(cfg *Config, md toml.MetaData) {
 		cfg.Gemini.Retry.Backoff = "30s"
 	}
 	// Enabled defaults to false (Go zero value); no explicit assignment needed.
+	if cfg.Upstream.Prefix != "" {
+		p := cfg.Upstream.Prefix
+		if !strings.HasPrefix(p, "/") {
+			p = "/" + p
+		}
+		p = strings.TrimSuffix(p, "/")
+		cfg.Upstream.Prefix = p
+	}
 }
 
 func validate(cfg *Config) error {
@@ -90,6 +99,14 @@ func validate(cfg *Config) error {
 	cfg.Gemini.Retry.BackoffDuration = d
 	if cfg.Gemini.Retry.Enabled && cfg.Gemini.Retry.MaxRetries < 1 {
 		return fmt.Errorf("gemini.retry.max_retries must be >= 1 when retry is enabled, got %d", cfg.Gemini.Retry.MaxRetries)
+	}
+	if cfg.Upstream.URL != "" {
+		if cfg.Upstream.User == "" {
+			return fmt.Errorf("upstream.user is required when upstream.url is set")
+		}
+		if cfg.Upstream.PasswordFile == "" {
+			return fmt.Errorf("upstream.password_file is required when upstream.url is set")
+		}
 	}
 	return nil
 }

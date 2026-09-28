@@ -73,6 +73,22 @@ ai = true
 
 Routes without `ai = true` skip the Gemini call entirely.
 
+### Upstream (Nextcloud, or any other WebDAV server)
+
+The BOOX only accepts one WebDAV account. If you also want it to browse another WebDAV server (e.g. Nextcloud `Books/`), set `[upstream]` and inkflow becomes a gateway in front of it:
+
+```toml
+[upstream]
+url = "https://nextcloud.example"
+prefix = "/remote.php/dav/files/anton"  # upstream path inkflow's own root maps to
+user = "anton"
+password_file = "/run/secrets/nextcloud-password"
+```
+
+A request for inkflow path `P` is served from upstream path `prefix + P`. A `PUT` that matches a `[[route]]` is imported into the vault as usual and then also written to upstream at `prefix + P`, MKCOL'ing missing parent collections on a 409 and retrying once. Everything else — `GET`, `PROPFIND`, `MOVE`, `DELETE`, an unmatched `PUT`, etc. — is reverse-proxied to upstream untouched, with hrefs, `Location`, and `Destination` rewritten back to inkflow-relative paths so the BOOX never sees the upstream prefix.
+
+`password_file` is read once at startup, like `gemini.api_key_file`.
+
 ## Run
 
 ```bash
