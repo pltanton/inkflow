@@ -79,6 +79,15 @@ from = "Syncs/"
 	if cfg.Gemini.SummaryPrompt == "" {
 		t.Error("default summary_prompt is empty")
 	}
+	if !strings.Contains(cfg.Gemini.TasksPrompt, "my_tasks") {
+		t.Errorf("default tasks_prompt does not mention my_tasks: %q", cfg.Gemini.TasksPrompt)
+	}
+	if cfg.CalDAV.Enabled {
+		t.Error("expected caldav disabled by default")
+	}
+	if cfg.CalDAV.ObsidianVault != "vault" {
+		t.Errorf("default obsidian_vault = %q, want vault_dir basename", cfg.CalDAV.ObsidianVault)
+	}
 	if cfg.Routes[0].AI {
 		t.Error("expected route.AI default false")
 	}
@@ -277,5 +286,54 @@ from = "Syncs/"
 	}
 	if cfg.Upstream.Prefix != "/remote.php/dav/files/anton" {
 		t.Errorf("Prefix = %q, want leading slash and no trailing slash", cfg.Upstream.Prefix)
+	}
+}
+
+func TestLoadParsesCalDAVConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "inkflow.toml")
+	body := `
+vault_dir = "/tmp/vault"
+
+[caldav]
+enabled = true
+url = "https://nextcloud.example/remote.php/dav/calendars/anton/inbox/"
+user = "anton"
+password_file = "/var/lib/inkflow/caldav-password"
+obsidian_vault = "Anton"
+categories = ["wallet"]
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	c := cfg.CalDAV
+	if !c.Enabled || c.User != "anton" || c.PasswordFile != "/var/lib/inkflow/caldav-password" ||
+		c.ObsidianVault != "Anton" || len(c.Categories) != 1 || c.Categories[0] != "wallet" ||
+		!strings.HasSuffix(c.URL, "/calendars/anton/inbox/") {
+		t.Fatalf("unexpected caldav config: %+v", c)
+	}
+}
+
+func TestValidateCalDAVRequiresURLAndUserWhenEnabled(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "missing url", body: "[caldav]\nenabled = true\nuser = \"anton\"\n"},
+		{name: "missing user", body: "[caldav]\nenabled = true\nurl = \"https://x\"\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "inkflow.toml")
+			if err := os.WriteFile(path, []byte("vault_dir = \"/tmp/vault\"\n"+tt.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := Load(path); err == nil || !strings.Contains(err.Error(), "caldav") {
+				t.Fatalf("expected caldav validation error, got %v", err)
+			}
+		})
 	}
 }

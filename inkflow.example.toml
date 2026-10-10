@@ -21,6 +21,15 @@ summary_prompt = "Summarize as 3-5 short bullets covering action items, decision
 # user = "anton"
 # password_file = "/run/secrets/nextcloud-password"
 
+# [caldav]
+# Pushes the author's tasks and #agent highlights as VTODOs to a CalDAV task list.
+# enabled = true
+# url = "https://nextcloud.example/remote.php/dav/calendars/anton/inbox/"
+# user = "anton"
+# password_file = "/run/secrets/nextcloud-password"  # $INKFLOW_CALDAV_PASSWORD takes precedence
+# obsidian_vault = "Anton"
+# categories = ["wallet"]
+
 [[route]]
 from = "Syncs/"
 pdf_dir = "_files/Attachments/Boox/Syncs"
