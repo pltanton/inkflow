@@ -274,3 +274,64 @@ func TestIsRetryable(t *testing.T) {
 		})
 	}
 }
+
+func TestProcessParsesMyTasksAndSendsTasksPrompt(t *testing.T) {
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		inner, _ := json.Marshal(map[string]any{
+			"ocr_text": "- мне: roadmap ledger finance",
+			"summary":  []string{"a"},
+			"my_tasks": []string{"Подготовить roadmap ledger finance", "  ", "Заполнить IPF"},
+		})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"candidates": []map[string]any{{
+				"content":      map[string]any{"parts": []map[string]any{{"text": string(inner)}}},
+				"finishReason": "STOP",
+			}},
+		})
+	}))
+	t.Cleanup(srv.Close)
+	c := New(ClientConfig{
+		Endpoint:      srv.URL,
+		APIKey:        "k",
+		Model:         "m",
+		Timeout:       2 * time.Second,
+		OCRPrompt:     "ocr",
+		SummaryPrompt: "summary",
+		TasksPrompt:   "List the writer's own tasks",
+	})
+	res, err := c.Process(context.Background(), bytes.NewReader([]byte("x")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"Подготовить roadmap ledger finance", "Заполнить IPF"}
+	if strings.Join(res.MyTasks, "|") != strings.Join(want, "|") {
+		t.Errorf("MyTasks = %q", res.MyTasks)
+	}
+	if !bytes.Contains(gotBody, []byte("List the writer's own tasks")) {
+		t.Errorf("tasks prompt missing: %s", gotBody)
+	}
+	if !bytes.Contains(gotBody, []byte(`"my_tasks"`)) {
+		t.Errorf("my_tasks missing from schema: %s", gotBody)
+	}
+}
+
+func TestProcessMissingMyTasksYieldsEmpty(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		inner, _ := json.Marshal(map[string]any{"ocr_text": "x", "summary": []string{"a"}})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"candidates": []map[string]any{{
+				"content":      map[string]any{"parts": []map[string]any{{"text": string(inner)}}},
+				"finishReason": "STOP",
+			}},
+		})
+	})
+	res, err := c.Process(context.Background(), bytes.NewReader([]byte("x")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.MyTasks) != 0 {
+		t.Errorf("MyTasks = %q", res.MyTasks)
+	}
+}

@@ -47,6 +47,7 @@ No fallback to default on template render error — import fails.
 | Var                           | Purpose                                                                        |
 | ----------------------------- | ------------------------------------------------------------------------------ |
 | `GEMINI_API_KEY`              | API key; takes precedence over `api_key_file`; empty string falls back to file |
+| `INKFLOW_CALDAV_PASSWORD`     | CalDAV password; takes precedence over `caldav.password_file`                  |
 | `WEBDAV_USER` / `WEBDAV_PASS` | Auth fallback if not in config                                                 |
 | `XDG_STATE_HOME`              | Base for default state file path                                               |
 | `SLOG_LEVEL`                  | Log level (`debug`, `info`, etc.)                                              |
@@ -54,6 +55,8 @@ No fallback to default on template render error — import fails.
 If any route has `ai = true` and no API key is available at startup, server refuses to start.
 
 Optional `[upstream]` (url, prefix, user, password_file) turns inkflow into a gateway in front of a real WebDAV server (e.g. Nextcloud): a `PUT` matching a route is imported as today and also teed to upstream at `prefix + P`; everything else is reverse-proxied to `prefix + P`, with response hrefs/`Location`/`Destination` rewritten back to inkflow-relative paths. `password_file` is read once at startup, like `gemini.api_key_file`; `url` requires `user` and `password_file`. See `internal/webdavserver/upstream.go`.
+
+Optional `[caldav]` (enabled, url, user, password_file, obsidian_vault, categories) pushes `my_tasks` and `#agent` highlights as VTODOs after an AI import. See `internal/caldav/client.go`.
 
 ---
 
@@ -65,9 +68,11 @@ internal/importer/importer.go  Main import logic (no tests — add carefully)
 internal/webdavserver/server.go  HTTP/WebDAV, auth, request dispatch
 internal/plan/                 Route matching, filename rendering, template render
 internal/config/               TOML parsing + validation
-internal/ai/gemini/client.go   Gemini API (base64 PDF → JSON ocr_text + summary_bullets)
+internal/ai/gemini/client.go   Gemini API (base64 PDF → JSON ocr_text + summary + my_tasks)
+internal/caldav/client.go      VTODO PUT to a CalDAV task list
 internal/frontmatter/          YAML frontmatter tag manipulation
 internal/note/block.go         Marker block insert/replace
+internal/note/tasks.go         ==highlight== extraction, task placeholder fill
 internal/state/store.go        BoltDB deduplication records
 ```
 
@@ -84,6 +89,8 @@ Data flow: `PUT /path/file.pdf` → route match → SHA256 dedup check → templ
 **Marker blocks replaced, not appended:** On re-upload, `<!-- inkflow:ocr:start -->` and `<!-- inkflow:summary:start -->` blocks are fully replaced. Previous content lost.
 
 **No Gemini retry:** On API failure, error message is written into the marker blocks and import continues. No retry logic exists.
+
+**Tasks:** `my_tasks` fill the first bare `- [ ]` line outside marker blocks (else a `## Tasks` marker block); `==highlight==` lines in the OCR become `## Agent` marker-block items. `status: done` is decided only when the note is first created (AI succeeded, no tasks, no highlights); existing notes keep their status.
 
 **Route matching:** Longest prefix wins. Two routes with identical `from` → error at startup, not at request time.
 
