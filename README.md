@@ -42,8 +42,6 @@ When a route has `ai = true`, inkflow sends the whole PDF to the [Gemini 2.5 Fla
 - `## Summary` — short action-item bullets.
 - `## OCR` — faithful transcription of the handwritten content.
 
-The same call also returns `my_tasks` — action items for the note's author (prompt: `tasks_prompt`). They replace the empty `- [ ]` placeholder in the template's TODO / Action items section (templates without one get a `## Tasks` block). Lines the author highlighted with a marker (`==text==` in the OCR) are treated as tasks for an AI agent and listed under `## Agent` as `- [ ] #agent <line>`. A new note with neither gets `status: done` instead of `status: inbox`. The `1-1` template is `meeting` plus `person: <title>` in the frontmatter.
-
 **API key.** Provide the key via the `GEMINI_API_KEY` environment variable, or set `api_key_file` in the `[gemini]` block to a path inkflow reads at startup. The env var takes precedence.
 
 **Cost.** Gemini 2.5 Flash costs roughly **$0.005 per note** (a few pages, mixed text/drawing). Costs vary with page count and content density.
@@ -103,20 +101,6 @@ services.inkflow.upstream = {
   passwordFile = "/run/secrets/nextcloud-app-password"; # a Nextcloud app password
 };
 ```
-
-### Tasks to CalDAV (Nextcloud Tasks, Tasks.org)
-
-```toml
-[caldav]
-enabled = true
-url = "https://nextcloud.example/remote.php/dav/calendars/anton/inbox/"  # the task list collection
-user = "anton"
-password_file = "/run/secrets/nextcloud-password"  # $INKFLOW_CALDAV_PASSWORD takes precedence
-obsidian_vault = "Anton"   # for obsidian:// links; defaults to the basename of vault_dir
-categories = ["wallet"]    # added to every task
-```
-
-After an AI import, every `my_tasks` item and every `#agent` highlight is `PUT` as a VTODO: SUMMARY is the task, DESCRIPTION holds the vault path and an `obsidian://open` link, CATEGORIES are `categories` + the template name (except `default`) + filename tags + `inkflow` (+ `agent`). The UID is a hash of note path and task text and the `PUT` uses `If-None-Match: *`, so re-importing the same note never duplicates a task. A CalDAV failure is logged and does not fail the import.
 
 ## Run
 

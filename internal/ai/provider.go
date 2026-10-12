@@ -18,5 +18,4 @@ type Provider interface {
 type Result struct {
 	OCR     string
 	Summary []string
-	MyTasks []string
 }

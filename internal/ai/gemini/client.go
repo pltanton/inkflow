@@ -118,9 +118,6 @@ func (c *Client) Process(ctx context.Context, pdf io.Reader) (ai.Result, error) 
 func (c *Client) buildRequest(pdfData []byte) map[string]any {
 	prompt := strings.TrimSpace(c.cfg.OCRPrompt) + "\n\n" +
 		strings.TrimSpace(c.cfg.SummaryPrompt)
-	if tasks := strings.TrimSpace(c.cfg.TasksPrompt); tasks != "" {
-		prompt += "\n\n" + tasks
-	}
 
 	return map[string]any{
 		"contents": []map[string]any{{
@@ -142,12 +139,8 @@ func (c *Client) buildRequest(pdfData []byte) map[string]any {
 						"type":  "array",
 						"items": map[string]any{"type": "string"},
 					},
-					"my_tasks": map[string]any{
-						"type":  "array",
-						"items": map[string]any{"type": "string"},
-					},
 				},
-				"required": []string{"ocr_text", "summary", "my_tasks"},
+				"required": []string{"ocr_text", "summary"},
 			},
 		},
 	}
@@ -167,7 +160,6 @@ type generateResponse struct {
 type innerPayload struct {
 	OCRText string   `json:"ocr_text"`
 	Summary []string `json:"summary"`
-	MyTasks []string `json:"my_tasks"`
 }
 
 func parseResponse(body []byte) (ai.Result, error) {
@@ -191,13 +183,7 @@ func parseResponse(body []byte) (ai.Result, error) {
 	for i, s := range inner.Summary {
 		summary[i] = unescapeNewlines(s)
 	}
-	var tasks []string
-	for _, t := range inner.MyTasks {
-		if t = strings.TrimSpace(t); t != "" {
-			tasks = append(tasks, t)
-		}
-	}
-	return ai.Result{OCR: unescapeNewlines(inner.OCRText), Summary: summary, MyTasks: tasks}, nil
+	return ai.Result{OCR: unescapeNewlines(inner.OCRText), Summary: summary}, nil
 }
 
 // unescapeNewlines repairs Gemini's JSON-mode output when the model

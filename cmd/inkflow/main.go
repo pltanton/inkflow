@@ -13,7 +13,6 @@ import (
 
 	"inkflow/internal/ai"
 	"inkflow/internal/ai/gemini"
-	"inkflow/internal/caldav"
 	"inkflow/internal/config"
 	"inkflow/internal/importer"
 	"inkflow/internal/log"
@@ -112,30 +111,13 @@ func loadRuntime(logger *slog.Logger, configPath string) (runtime, error) {
 			Timeout:       timeout,
 			OCRPrompt:     cfg.Gemini.OCRPrompt,
 			SummaryPrompt: cfg.Gemini.SummaryPrompt,
-			TasksPrompt:   cfg.Gemini.TasksPrompt,
 		})
-	}
-	if cfg.CalDAV.Enabled {
-		pass, err := resolveCalDAVPassword(cfg.CalDAV)
-		if err != nil {
-			return runtime{}, err
-		}
-		cfg.CalDAV.Password = pass
 	}
 	store, err := state.Open(statePath)
 	if err != nil {
 		return runtime{}, err
 	}
 	imp := importer.New(cfg, store, aiProvider)
-	if cfg.CalDAV.Enabled {
-		imp.SetTaskSink(caldav.New(caldav.Config{
-			URL:           cfg.CalDAV.URL,
-			User:          cfg.CalDAV.User,
-			Password:      cfg.CalDAV.Password,
-			ObsidianVault: cfg.CalDAV.ObsidianVault,
-			Categories:    cfg.CalDAV.Categories,
-		}))
-	}
 
 	var sched *retry.Scheduler
 	if cfg.Gemini.Retry.Enabled {
@@ -191,22 +173,6 @@ func resolveUpstreamPassword(cfg config.UpstreamConfig) (string, error) {
 		return "", fmt.Errorf("upstream: %s is empty", cfg.PasswordFile)
 	}
 	return pass, nil
-}
-
-func resolveCalDAVPassword(cfg config.CalDAVConfig) (string, error) {
-	if pass := strings.TrimSpace(os.Getenv("INKFLOW_CALDAV_PASSWORD")); pass != "" {
-		return pass, nil
-	}
-	if cfg.PasswordFile != "" {
-		data, err := os.ReadFile(cfg.PasswordFile)
-		if err != nil {
-			return "", fmt.Errorf("read %s: %w", cfg.PasswordFile, err)
-		}
-		if pass := strings.TrimSpace(string(data)); pass != "" {
-			return pass, nil
-		}
-	}
-	return "", fmt.Errorf("caldav: no password — set $INKFLOW_CALDAV_PASSWORD or [caldav].password_file")
 }
 
 func newServeCmd() *cobra.Command {

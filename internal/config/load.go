@@ -60,14 +60,6 @@ func applyDefaults(cfg *Config, md toml.MetaData) {
 		cfg.Gemini.SummaryPrompt = "Summarize as 3-5 short bullets covering action items, decisions, deadlines, people. Use the source language. " +
 			"Plain bullets only — do not produce `[ ]` or `[x]` checkboxes. The reader maintains a separate TODO section elsewhere in the note."
 	}
-	if cfg.Gemini.TasksPrompt == "" {
-		cfg.Gemini.TasksPrompt = "In `my_tasks`, list concrete action items that the writer of these notes must do personally: items addressed to the writer in first person (\"I\", \"me\", \"я\", \"мне\") or by the writer's own name. " +
-			"Exclude other people's tasks, status updates, and things already done. Exclude items the writer highlighted (==text==): those are delegated elsewhere. " +
-			"One short imperative phrase per task, in the source language. Return an empty list when there are none."
-	}
-	if cfg.CalDAV.ObsidianVault == "" && cfg.VaultDir != "" {
-		cfg.CalDAV.ObsidianVault = filepath.Base(filepath.Clean(cfg.VaultDir))
-	}
 	// Retry defaults: only apply MaxRetries when the key was not explicitly
 	// set in the TOML source, so that max_retries = 0 is preserved for
 	// validation (e.g. rejected when enabled = true).
@@ -114,14 +106,6 @@ func validate(cfg *Config) error {
 		}
 		if cfg.Upstream.PasswordFile == "" {
 			return fmt.Errorf("upstream.password_file is required when upstream.url is set")
-		}
-	}
-	if cfg.CalDAV.Enabled {
-		if cfg.CalDAV.URL == "" {
-			return fmt.Errorf("caldav.url is required when caldav is enabled")
-		}
-		if cfg.CalDAV.User == "" {
-			return fmt.Errorf("caldav.user is required when caldav is enabled")
 		}
 	}
 	return nil

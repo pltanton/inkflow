@@ -19,7 +19,6 @@ type NoteData struct {
 	PDFRelPath string
 	Template   string
 	Tags       []string
-	Status     string
 }
 
 func RenderPattern(pattern string, date time.Time, stem, slug, ext string) string {
@@ -33,9 +32,6 @@ func RenderPattern(pattern string, date time.Time, stem, slug, ext string) strin
 }
 
 func RenderNoteBody(templateDir string, d NoteData) (string, error) {
-	if d.Status == "" {
-		d.Status = "inbox"
-	}
 	src, err := loadTemplateSource(templateDir, d.Template)
 	if err != nil {
 		return "", err

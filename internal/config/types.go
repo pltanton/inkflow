@@ -15,19 +15,7 @@ type Config struct {
 
 	Gemini   GeminiConfig   `toml:"gemini" json:"gemini"`
 	Upstream UpstreamConfig `toml:"upstream" json:"upstream"`
-	CalDAV   CalDAVConfig   `toml:"caldav" json:"caldav"`
 	Routes   []Route        `toml:"route" json:"route"`
-}
-
-type CalDAVConfig struct {
-	Enabled       bool     `toml:"enabled" json:"enabled"`
-	URL           string   `toml:"url" json:"url"`
-	User          string   `toml:"user" json:"user"`
-	PasswordFile  string   `toml:"password_file" json:"password_file"`
-	ObsidianVault string   `toml:"obsidian_vault" json:"obsidian_vault"`
-	Categories    []string `toml:"categories" json:"categories"`
-
-	Password string `toml:"-" json:"-"`
 }
 
 type UpstreamConfig struct {
@@ -55,7 +43,6 @@ type GeminiConfig struct {
 	Timeout       string `toml:"timeout" json:"timeout"`
 	OCRPrompt     string `toml:"ocr_prompt" json:"ocr_prompt"`
 	SummaryPrompt string `toml:"summary_prompt" json:"summary_prompt"`
-	TasksPrompt   string `toml:"tasks_prompt" json:"tasks_prompt"`
 
 	Retry RetryConfig `toml:"retry" json:"retry"`
 }
