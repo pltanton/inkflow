@@ -132,31 +132,6 @@ func TestBuildPropagatesRouteAIFlag(t *testing.T) {
 	}
 }
 
-func TestRenderNoteBodyStatus(t *testing.T) {
-	tests := []struct {
-		name     string
-		template string
-		status   string
-		want     string
-	}{
-		{name: "defaults to inbox", template: "sync", want: "status: inbox\n"},
-		{name: "done for sync", template: "sync", status: "done", want: "status: done\n"},
-		{name: "done for meeting", template: "meeting", status: "done", want: "status: done\n"},
-		{name: "default template", template: "default", status: "done", want: "status: done\n"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			body, err := RenderNoteBody("", NoteData{Title: "TP", Template: tt.template, Status: tt.status})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !strings.Contains(body, tt.want) {
-				t.Fatalf("missing %q:\n%s", tt.want, body)
-			}
-		})
-	}
-}
-
 func TestRenderNoteBodyPersonOnlyForOneOnOne(t *testing.T) {
 	body, err := RenderNoteBody("", NoteData{Date: "2026-10-09", Title: "Iaroslav", Template: "1-1"})
 	if err != nil {

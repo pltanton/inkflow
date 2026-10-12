@@ -12,5 +12,4 @@ type ClientConfig struct {
 	Timeout       time.Duration
 	OCRPrompt     string
 	SummaryPrompt string
-	TasksPrompt   string
 }

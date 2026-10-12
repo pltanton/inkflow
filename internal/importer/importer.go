@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"inkflow/internal/ai"
-	"inkflow/internal/caldav"
 	"inkflow/internal/config"
 	"inkflow/internal/frontmatter"
 	"inkflow/internal/note"
@@ -27,19 +26,10 @@ type Importer struct {
 	cfg   *config.Config
 	store *state.Store
 	ai    ai.Provider
-	tasks TaskSink
-}
-
-type TaskSink interface {
-	PushNote(ctx context.Context, n caldav.NoteTasks) error
 }
 
 func New(cfg *config.Config, store *state.Store, aiProvider ai.Provider) *Importer {
 	return &Importer{cfg: cfg, store: store, ai: aiProvider}
-}
-
-func (i *Importer) SetTaskSink(sink TaskSink) {
-	i.tasks = sink
 }
 
 func (i *Importer) Import(ctx context.Context, input string, reader io.Reader, modTime time.Time) (*state.Record, error) {
@@ -130,7 +120,6 @@ func (i *Importer) persist(ctx context.Context, existing *state.Record, sourcePa
 	}
 
 	var summaryBody, ocrBody string
-	var tasks *noteTasks
 	if t.AI && i.ai != nil {
 		res, err := i.ai.Process(ctx, bytes.NewReader(pdfData))
 		if err != nil {
@@ -151,7 +140,6 @@ func (i *Importer) persist(ctx context.Context, existing *state.Record, sourcePa
 			} else {
 				summaryBody = "_AI returned no summary._"
 			}
-			tasks = tasksFrom(res)
 			rec.AIStatus = state.AIStatusSuccess
 			rec.AIRetryCount++
 			rec.AILastError = ""
@@ -159,7 +147,7 @@ func (i *Importer) persist(ctx context.Context, existing *state.Record, sourcePa
 		}
 	}
 
-	if err := i.writeNote(t, summaryBody, ocrBody, tasks); err != nil {
+	if err := i.writeNote(t, summaryBody, ocrBody); err != nil {
 		removeIfDistinct(previousPDFPath, pdfAbs)
 		removeIfDistinct(previousNotePath, noteAbs)
 		return nil, err
@@ -176,45 +164,7 @@ func (i *Importer) persist(ctx context.Context, existing *state.Record, sourcePa
 		_ = os.Remove(filepath.Join(i.cfg.VaultDir, filepath.FromSlash(previousNotePath)))
 	}
 	logImported(sourcePath, t.NoteRel, t.PDFRel)
-	i.pushTasks(ctx, t.NoteRel, t.Template, t.Tags, tasks)
 	return rec, nil
-}
-
-type noteTasks struct {
-	mine  []string
-	agent []string
-}
-
-func tasksFrom(res ai.Result) *noteTasks {
-	return &noteTasks{mine: res.MyTasks, agent: note.ExtractHighlights(res.OCR)}
-}
-
-func (n *noteTasks) empty() bool {
-	return len(n.mine) == 0 && len(n.agent) == 0
-}
-
-func applyTasks(content string, tasks *noteTasks) string {
-	if tasks == nil {
-		return content
-	}
-	content = note.PlaceTasks(content, tasks.mine)
-	return note.UpsertMarkerBlock(content, "Agent", "agent", note.TaskLines(tasks.agent, "#agent "))
-}
-
-func (i *Importer) pushTasks(ctx context.Context, notePath, template string, tags []string, tasks *noteTasks) {
-	if i.tasks == nil || tasks == nil || tasks.empty() {
-		return
-	}
-	err := i.tasks.PushNote(ctx, caldav.NoteTasks{
-		NotePath: notePath,
-		Template: template,
-		Tags:     tags,
-		Mine:     tasks.mine,
-		Agent:    tasks.agent,
-	})
-	if err != nil {
-		slog.Warn("caldav push failed", "note", notePath, "err", err)
-	}
 }
 
 func (i *Importer) saveRecord(previousSourcePath string, rec *state.Record) error {
@@ -224,7 +174,7 @@ func (i *Importer) saveRecord(previousSourcePath string, rec *state.Record) erro
 	return i.store.Save(previousSourcePath, rec)
 }
 
-func (i *Importer) writeNote(t plan.Result, summaryBody, ocrBody string, tasks *noteTasks) error {
+func (i *Importer) writeNote(t plan.Result, summaryBody, ocrBody string) error {
 	noteAbs := filepath.Join(i.cfg.VaultDir, filepath.FromSlash(t.NoteRel))
 	if err := os.MkdirAll(filepath.Dir(noteAbs), 0o755); err != nil {
 		return err
@@ -235,24 +185,18 @@ func (i *Importer) writeNote(t plan.Result, summaryBody, ocrBody string, tasks *
 	} else if !os.IsNotExist(err) {
 		return err
 	} else {
-		status := "inbox"
-		if tasks != nil && tasks.empty() {
-			status = "done"
-		}
 		body, err := plan.RenderNoteBody(i.cfg.TemplateDir, plan.NoteData{
 			Date:       t.Date.Format("2006-01-02"),
 			Title:      t.Title,
 			PDFRelPath: t.PDFRel,
 			Template:   t.Template,
 			Tags:       t.Tags,
-			Status:     status,
 		})
 		if err != nil {
 			return err
 		}
 		content = body
 	}
-	content = applyTasks(content, tasks)
 	content = note.UpsertMarkerBlock(content, "Summary", "summary", summaryBody)
 	content = note.UpsertMarkerBlock(content, "OCR", "ocr", ocrBody)
 	return os.WriteFile(noteAbs, []byte(content), 0o644)
@@ -311,9 +255,7 @@ func (i *Importer) RetryAI(ctx context.Context, rec state.Record) error {
 	if err != nil {
 		return fmt.Errorf("retry AI: read vault note: %w", err)
 	}
-	tasks := tasksFrom(res)
-	content := applyTasks(string(existing), tasks)
-	content = note.UpsertMarkerBlock(content, "Summary", "summary", summaryBody)
+	content := note.UpsertMarkerBlock(string(existing), "Summary", "summary", summaryBody)
 	content = note.UpsertMarkerBlock(content, "OCR", "ocr", ocrBody)
 	if err := os.WriteFile(noteAbs, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("retry AI: write vault note: %w", err)
@@ -327,12 +269,6 @@ func (i *Importer) RetryAI(ctx context.Context, rec state.Record) error {
 		return fmt.Errorf("retry AI: save record: %w", err)
 	}
 	slog.Info("retry AI: success", "source", rec.SourcePath)
-	var template string
-	var tags []string
-	if t, err := plan.Build(i.cfg.Routes, i.cfg, rec.SourcePath, rec.SourceModTime); err == nil {
-		template, tags = t.Template, t.Tags
-	}
-	i.pushTasks(ctx, rec.VaultNotePath, template, tags, tasks)
 	return nil
 }
 

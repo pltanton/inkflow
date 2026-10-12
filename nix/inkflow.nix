@@ -59,40 +59,6 @@
         type = lib.types.str;
         default = "Summarize as 3-5 short bullets covering action items, decisions, deadlines, people. Use the source language. Plain bullets only — do not produce `[ ]` or `[x]` checkboxes. The reader maintains a separate TODO section elsewhere in the note.";
       };
-      tasksPrompt = lib.mkOption {
-        type = lib.types.str;
-        default = "";
-        description = "Instructions for the my_tasks field; empty keeps inkflow's built-in prompt.";
-      };
-    };
-  };
-
-  caldavType = lib.types.submodule {
-    options = {
-      enable = lib.mkEnableOption "pushing extracted tasks to a CalDAV task list as VTODOs";
-      url = lib.mkOption {
-        type = lib.types.str;
-        default = "";
-        description = "Task list collection URL, e.g. https://nextcloud.example/remote.php/dav/calendars/anton/inbox/.";
-      };
-      user = lib.mkOption {
-        type = lib.types.str;
-        default = "";
-      };
-      passwordFile = lib.mkOption {
-        type = lib.types.nullOr lib.types.path;
-        default = null;
-      };
-      obsidianVault = lib.mkOption {
-        type = lib.types.str;
-        default = "";
-        description = "Vault name for obsidian:// links in task descriptions; empty uses the basename of vaultDir.";
-      };
-      categories = lib.mkOption {
-        type = lib.types.listOf lib.types.str;
-        default = [];
-        description = "Extra CATEGORIES added to every pushed task.";
-      };
     };
   };
 
@@ -145,7 +111,6 @@
       timeout = cfg.gemini.timeout;
       ocr_prompt = cfg.gemini.ocrPrompt;
       summary_prompt = cfg.gemini.summaryPrompt;
-      tasks_prompt = cfg.gemini.tasksPrompt;
     }
     // lib.optionalAttrs (cfg.gemini.apiKeyFile != null) {
       api_key_file = "/run/credentials/inkflow.service/gemini-key";
@@ -160,22 +125,9 @@
       password_file = "/run/credentials/inkflow.service/upstream-password";
     });
 
-  caldavSettings =
-    mkConfig {
-      enabled = true;
-      url = cfg.caldav.url;
-      user = cfg.caldav.user;
-      obsidian_vault = cfg.caldav.obsidianVault;
-      categories = cfg.caldav.categories;
-    }
-    // lib.optionalAttrs (cfg.caldav.passwordFile != null) {
-      password_file = "/run/credentials/inkflow.service/caldav-password";
-    };
-
   loadCredentials =
     lib.optional (cfg.gemini.apiKeyFile != null) "gemini-key:${toString cfg.gemini.apiKeyFile}"
-    ++ lib.optional (cfg.upstream.passwordFile != null) "upstream-password:${toString cfg.upstream.passwordFile}"
-    ++ lib.optional (cfg.caldav.enable && cfg.caldav.passwordFile != null) "caldav-password:${toString cfg.caldav.passwordFile}";
+    ++ lib.optional (cfg.upstream.passwordFile != null) "upstream-password:${toString cfg.upstream.passwordFile}";
 
   baseSettings =
     mkConfig {
@@ -190,8 +142,7 @@
       route = map mkRoute cfg.routes;
     }
     // {gemini = geminiSettings;}
-    // lib.optionalAttrs (cfg.upstream.url != "") {upstream = upstreamSettings;}
-    // lib.optionalAttrs cfg.caldav.enable {caldav = caldavSettings;};
+    // lib.optionalAttrs (cfg.upstream.url != "") {upstream = upstreamSettings;};
 
   configFile = toml.generate "inkflow.toml" (baseSettings // cfg.extraSettings);
 in {
@@ -277,12 +228,6 @@ in {
       description = "Optional real WebDAV server (e.g. Nextcloud) to proxy everything to besides matched-route uploads";
     };
 
-    caldav = lib.mkOption {
-      type = caldavType;
-      default = {};
-      description = "Optional CalDAV task list (e.g. Nextcloud Tasks) that receives the owner's tasks and #agent highlights";
-    };
-
     extraSettings = lib.mkOption {
       type = lib.types.attrs;
       default = {};
@@ -301,10 +246,6 @@ in {
       {
         assertion = cfg.upstream.url == "" || (cfg.upstream.user != "" && cfg.upstream.passwordFile != null);
         message = "services.inkflow.upstream.user and .passwordFile are required when .upstream.url is set";
-      }
-      {
-        assertion = !cfg.caldav.enable || (cfg.caldav.url != "" && cfg.caldav.user != "");
-        message = "services.inkflow.caldav.url and .user are required when .caldav.enable is set";
       }
     ];
 

@@ -55,35 +55,3 @@ func TestAnyRouteWantsAIDetectsFlag(t *testing.T) {
 		t.Error("no AI routes should not enable provider")
 	}
 }
-
-func TestResolveCalDAVPassword(t *testing.T) {
-	dir := t.TempDir()
-	file := filepath.Join(dir, "pw")
-	if err := os.WriteFile(file, []byte("from-file\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	tests := []struct {
-		name    string
-		env     string
-		file    string
-		want    string
-		wantErr bool
-	}{
-		{name: "env wins", env: "from-env", file: file, want: "from-env"},
-		{name: "file fallback", file: file, want: "from-file"},
-		{name: "missing", wantErr: true},
-		{name: "unreadable file", file: filepath.Join(dir, "absent"), wantErr: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("INKFLOW_CALDAV_PASSWORD", tt.env)
-			got, err := resolveCalDAVPassword(config.CalDAVConfig{PasswordFile: tt.file})
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("err = %v", err)
-			}
-			if got != tt.want {
-				t.Errorf("got %q", got)
-			}
-		})
-	}
-}
