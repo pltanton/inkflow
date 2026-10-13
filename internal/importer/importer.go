@@ -18,6 +18,7 @@ import (
 	"inkflow/internal/config"
 	"inkflow/internal/frontmatter"
 	"inkflow/internal/note"
+	"inkflow/internal/pdfhash"
 	"inkflow/internal/plan"
 	"inkflow/internal/state"
 )
@@ -43,6 +44,7 @@ func (i *Importer) Import(ctx context.Context, input string, reader io.Reader, m
 	}
 	shaSum := sha256.Sum256(data)
 	sha := hex.EncodeToString(shaSum[:])
+	contentHash := pdfhash.Sum(data)
 
 	t, err := plan.Build(i.cfg.Routes, i.cfg, input, modTime)
 	if err != nil {
@@ -58,36 +60,49 @@ func (i *Importer) Import(ctx context.Context, input string, reader io.Reader, m
 	// would only burn Gemini tokens and produce visible flicker. A route
 	// change (different PDFRel/NoteRel) bypasses dedup so files land in the
 	// new location.
-	if existing != nil && existing.SHA256 == sha &&
-		existing.VaultPDFPath == t.PDFRel && existing.VaultNotePath == t.NoteRel {
-		return existing, nil
+	if existing != nil && existing.VaultPDFPath == t.PDFRel && existing.VaultNotePath == t.NoteRel {
+		if existing.SHA256 == sha {
+			if existing.SourcePath == input && existing.ContentHash != "" {
+				return existing, nil
+			}
+			// Backfill legacy records and preserve exact-hash rename handling.
+			return i.refreshRecord(existing, input, modTime, sha, contentHash, int64(len(data)))
+		}
+		// Only use the stable fingerprint for the same WebDAV source. A rename
+		// can change filename-derived title or tags even when the PDF is
+		// unchanged, so it must continue through the normal import path.
+		if existing.SourcePath == input && existing.ContentHash != "" && existing.ContentHash == contentHash {
+			return i.refreshRecord(existing, input, modTime, sha, contentHash, int64(len(data)))
+		}
 	}
-	return i.persist(ctx, existing, input, modTime, sha, t, data)
+	return i.persist(ctx, existing, input, modTime, sha, contentHash, t, data)
 }
 
 func (i *Importer) lookupRecord(sourcePath, sha string) (*state.Record, error) {
 	if old, err := i.store.GetBySourcePath(sourcePath); err != nil {
 		return nil, err
-	} else if old != nil && old.SHA256 == sha {
+	} else if old != nil {
 		return old, nil
 	}
 
-	old, err := i.store.GetByHash(sha)
-	if err != nil || old == nil {
-		return old, err
-	}
-	if old.SourcePath != sourcePath {
-		prevPath := old.SourcePath
-		old.SourcePath = sourcePath
-		old.ImportedAt = time.Now().UTC()
-		if err := i.store.Save(prevPath, old); err != nil {
-			return nil, err
-		}
-	}
-	return old, nil
+	return i.store.GetByHash(sha)
 }
 
-func (i *Importer) persist(ctx context.Context, existing *state.Record, sourcePath string, modTime time.Time, sha string, t plan.Result, pdfData []byte) (*state.Record, error) {
+func (i *Importer) refreshRecord(existing *state.Record, sourcePath string, modTime time.Time, sha, contentHash string, size int64) (*state.Record, error) {
+	previousSourcePath := existing.SourcePath
+	existing.SourcePath = sourcePath
+	existing.SHA256 = sha
+	existing.ContentHash = contentHash
+	existing.SourceModTime = modTime
+	existing.SourceSize = size
+	existing.ImportedAt = time.Now().UTC()
+	if err := i.store.Save(previousSourcePath, existing); err != nil {
+		return nil, err
+	}
+	return existing, nil
+}
+
+func (i *Importer) persist(ctx context.Context, existing *state.Record, sourcePath string, modTime time.Time, sha, contentHash string, t plan.Result, pdfData []byte) (*state.Record, error) {
 	pdfAbs := filepath.Join(i.cfg.VaultDir, filepath.FromSlash(t.PDFRel))
 	noteAbs := filepath.Join(i.cfg.VaultDir, filepath.FromSlash(t.NoteRel))
 	if err := os.MkdirAll(filepath.Dir(pdfAbs), 0o755); err != nil {
@@ -102,6 +117,7 @@ func (i *Importer) persist(ctx context.Context, existing *state.Record, sourcePa
 	rec := &state.Record{
 		SourcePath:    sourcePath,
 		SHA256:        sha,
+		ContentHash:   contentHash,
 		SourceModTime: modTime,
 		SourceSize:    int64(len(pdfData)),
 		VaultPDFPath:  t.PDFRel,

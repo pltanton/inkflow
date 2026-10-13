@@ -428,3 +428,76 @@ func TestPutAIFailureStoresAIStatusFailed(t *testing.T) {
 		t.Error("AILastRetryAt is zero, want a non-zero timestamp")
 	}
 }
+
+func TestPutMetadataOnlyPDFChangeSkipsAICall(t *testing.T) {
+	vaultDir := t.TempDir()
+	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	cfg := &config.Config{
+		VaultDir:       vaultDir,
+		DefaultPDFDir:  "pdfs",
+		DefaultNoteDir: "notes",
+		Routes:         []config.Route{{From: "Syncs/", Template: "default", AI: true}},
+	}
+	calls := 0
+	imp := importer.New(cfg, store, countingAIClient{
+		result: ai.Result{OCR: "transcript", Summary: []string{"bullet"}},
+		calls:  &calls,
+	})
+	srv := &Server{cfg: cfg, imp: imp}
+
+	bodies := [][]byte{
+		[]byte("%PDF-1.7\n1 0 obj << /ModDate (D:20260720100000Z) >> stream\nstroke\nendstream endobj\ntrailer << /ID [<1111><2222>] >>\n%%EOF"),
+		[]byte("%PDF-1.7\n1 0 obj << /ModDate (D:20260721100000Z) >> stream\nstroke\nendstream endobj\ntrailer << /ID [<aaaa><bbbb>] >>\n%%EOF"),
+	}
+	for n, body := range bodies {
+		req := httptest.NewRequest("PUT", "/Syncs/2026-06-04%20stable.pdf", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		if rec.Code != 201 {
+			t.Fatalf("attempt %d: status = %d body=%s", n, rec.Code, rec.Body.String())
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("expected metadata-only re-export to skip AI, got %d calls", calls)
+	}
+}
+
+func TestPutActualPDFContentChangeCallsAIAgain(t *testing.T) {
+	vaultDir := t.TempDir()
+	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	cfg := &config.Config{
+		VaultDir:       vaultDir,
+		DefaultPDFDir:  "pdfs",
+		DefaultNoteDir: "notes",
+		Routes:         []config.Route{{From: "Syncs/", Template: "default", AI: true}},
+	}
+	calls := 0
+	imp := importer.New(cfg, store, countingAIClient{
+		result: ai.Result{OCR: "transcript", Summary: []string{"bullet"}},
+		calls:  &calls,
+	})
+	srv := &Server{cfg: cfg, imp: imp}
+
+	for n, stroke := range []string{"first stroke", "second stroke"} {
+		body := []byte("%PDF-1.7\n1 0 obj << /ModDate (D:20260720100000Z) >> stream\n" + stroke + "\nendstream endobj\n%%EOF")
+		req := httptest.NewRequest("PUT", "/Syncs/2026-06-04%20changed.pdf", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		if rec.Code != 201 {
+			t.Fatalf("attempt %d: status = %d body=%s", n, rec.Code, rec.Body.String())
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("expected real content change to call AI again, got %d calls", calls)
+	}
+}
