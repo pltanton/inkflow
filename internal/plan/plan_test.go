@@ -44,6 +44,26 @@ func TestRenderPattern(t *testing.T) {
 	}
 }
 
+func TestBuildExpandsDatePlaceholdersInDirsAndNames(t *testing.T) {
+	routes := []config.Route{{
+		From:     "Syncs/",
+		NoteDir:  "Wallet/Syncs/{year}/{month}",
+		NoteName: "{date} {stem}.md",
+		PDFDir:   "pdfs",
+		PDFName:  "{year}/{year}-{month}-{day} {stem}.pdf",
+	}}
+	got, err := Build(routes, &config.Config{}, "Syncs/2026-03-09 TP.pdf", time.Date(2026, 5, 7, 11, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.NoteRel != "Wallet/Syncs/2026/03/2026-03-09 TP.md" {
+		t.Fatalf("note rel = %q", got.NoteRel)
+	}
+	if got.PDFRel != "pdfs/2026/2026-03-09 TP.pdf" {
+		t.Fatalf("pdf rel = %q", got.PDFRel)
+	}
+}
+
 func TestRenderNoteBodyAppendsTagsOnce(t *testing.T) {
 	body, err := RenderNoteBody("", NoteData{
 		Date:       "2026-05-06",

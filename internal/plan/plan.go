@@ -59,8 +59,8 @@ func Build(routes []config.Route, defaults *config.Config, input string, now tim
 	notePattern := RenderPattern(noteName, date, title, slug, ext)
 	return Result{
 		SourcePath: input,
-		PDFRel:     util.SlashPath(r.PDFDir, pdfPattern),
-		NoteRel:    util.SlashPath(r.NoteDir, notePattern),
+		PDFRel:     util.SlashPath(RenderPattern(r.PDFDir, date, title, slug, ext), pdfPattern),
+		NoteRel:    util.SlashPath(RenderPattern(r.NoteDir, date, title, slug, ext), notePattern),
 		Title:      title,
 		Date:       date,
 		Template:   r.Template,
