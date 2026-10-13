@@ -73,6 +73,8 @@ ai = true
 
 Routes without `ai = true` skip the Gemini call entirely.
 
+`note_dir`, `pdf_dir`, `note_name` and `pdf_name` accept placeholders: `{date}` (`2006-01-02`), `{year}`, `{month}`, `{day}` (taken from the date at the start of the BOOX file name, or the import time), `{stem}` (title with `[tags]` removed), `{slug}` and `{ext}`. For example `note_dir = "Notes/Syncs/{year}/{month}"` files notes into per-month folders.
+
 ### Upstream (Nextcloud, or any other WebDAV server)
 
 The BOOX only accepts one WebDAV account. If you also want it to browse another WebDAV server (e.g. Nextcloud `Books/`), set `[upstream]` and inkflow becomes a gateway in front of it:

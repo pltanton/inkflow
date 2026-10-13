@@ -24,6 +24,9 @@ type NoteData struct {
 func RenderPattern(pattern string, date time.Time, stem, slug, ext string) string {
 	repl := strings.NewReplacer(
 		"{date}", date.Format("2006-01-02"),
+		"{year}", date.Format("2006"),
+		"{month}", date.Format("01"),
+		"{day}", date.Format("02"),
 		"{stem}", stem,
 		"{slug}", slug,
 		"{ext}", ext,
